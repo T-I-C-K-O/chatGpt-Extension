@@ -350,11 +350,19 @@ function buildFullPrompt(raw) {
 }
 
 function buildFilename(raw, index) {
-  const folder    = state.settings.downloadFolder || 'chatgpt-images';
-  const sanitized = raw.substring(0, 60)
+  const folder = state.settings.downloadFolder || 'chatgpt-images';
+
+  // Trim at last word boundary within 50 chars so the cut isn't mid-word
+  let slug = raw.trim().substring(0, 50);
+  const lastSpace = slug.lastIndexOf(' ');
+  if (lastSpace > 20) slug = slug.substring(0, lastSpace);
+
+  const sanitized = slug
+    .toLowerCase()
     .replace(/[<>:"/\\|?*\r\n]+/g, '')
     .trim()
-    .replace(/\s+/g, '_');
+    .replace(/\s+/g, '_')
+    .replace(/_+$/g, '');  // remove trailing underscores left by boundary trim
 
   if (state.settings.includeSerial) {
     return `${folder}/${String(index).padStart(3, '0')}_${sanitized}.png`;
