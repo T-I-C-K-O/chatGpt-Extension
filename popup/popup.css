@@ -380,6 +380,99 @@ html, body {
 }
 .btn-secondary:hover:not(:disabled) { border-color: var(--primary); color: var(--primary-lt); }
 
+/* ===== QUEUE STATUS LIST ===== */
+.qs-section {
+  margin: 0 12px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.qs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-dim);
+}
+.qs-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+.qs-stats {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+}
+.qs-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+.qs-empty {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 14px 12px;
+}
+.qs-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-dim);
+  min-height: 32px;
+}
+.qs-item:last-child { border-bottom: none; }
+.qs-num {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 18px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.qs-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.qs-pending .qs-dot  { background: var(--text-muted); }
+.qs-running .qs-dot  { background: var(--warn); animation: pulse 0.9s ease-in-out infinite; }
+.qs-success .qs-dot  { background: var(--success); }
+.qs-failed  .qs-dot  { background: var(--danger); }
+.qs-text {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qs-label {
+  font-size: 10px;
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.qs-pending .qs-label { color: var(--text-muted); }
+.qs-running .qs-label { color: var(--warn); }
+.qs-success .qs-label { color: var(--success); }
+.qs-failed  .qs-label { color: var(--danger); }
+.qs-retry {
+  flex-shrink: 0;
+  background: rgba(220,38,38,0.15);
+  border: 1px solid rgba(220,38,38,0.4);
+  border-radius: 4px;
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.qs-retry:hover { background: rgba(220,38,38,0.3); }
+
 /* ===== GENERATION LOG ===== */
 .log-section {
   margin: 0 12px 12px;

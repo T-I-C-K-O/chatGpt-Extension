@@ -90,6 +90,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return true;
       }
       break;
+
+    case 'REGENERATE_INDEX': {
+      const { index, prompt } = msg.data;
+      const full     = buildFullPrompt(prompt);
+      const filename = buildFilename(prompt, index + 1);
+      state.lastFullPrompt = full;
+      state.lastFilename   = filename;
+      state.isRunning      = true;
+      generateOne(full, filename)
+        .then(() => {
+          state.isRunning = false;
+          notify('RETRY_SUCCESS', { index });
+          sendResponse({ success: true });
+        })
+        .catch(e => {
+          state.isRunning = false;
+          notify('RETRY_ERROR', { index, error: e.message });
+          sendResponse({ success: false, error: e.message });
+        });
+      return true;
+    }
   }
 });
 

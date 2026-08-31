@@ -4,6 +4,7 @@
 let activeTabId = null;
 let isGenerating = false;
 let totalInQueue = 0;
+let queueItems   = []; // { prompt, status: 'pending'|'running'|'success'|'failed', error }
 
 // ==================== INIT ====================
 document.addEventListener('DOMContentLoaded', async () => {
@@ -163,7 +164,6 @@ function setupEventListeners() {
   document.getElementById('startBtn').addEventListener('click', startGeneration);
   document.getElementById('stopBtn').addEventListener('click', stopGeneration);
   document.getElementById('regenBtn').addEventListener('click', regenerateLast);
-  document.getElementById('clearLogBtn').addEventListener('click', clearLog);
 
   // Go to ChatGPT
   document.getElementById('goToBtn').addEventListener('click', () => {
@@ -230,10 +230,9 @@ async function startGeneration() {
     showProgress(true);
     updateProgressBar(0, prompts.length);
     document.getElementById('progressText').textContent = 'Starting generation…';
-    addLog('info', `Queue started — ${prompts.length} prompts`);
+    initQueueStatus(prompts);
   } catch (err) {
     showToast('Failed to start: ' + err.message, 'error');
-    addLog('error', 'Failed to start: ' + err.message);
   }
 }
 
@@ -242,8 +241,14 @@ async function stopGeneration() {
     await sendToTab({ action: 'STOP_GENERATION' });
     isGenerating = false;
     syncGeneratingUI(false);
+    // Mark any still-running items as failed
+    queueItems.forEach((item, i) => {
+      if (item.status === 'running' || item.status === 'pending') {
+        queueItems[i].status = item.status === 'running' ? 'failed' : 'pending';
+      }
+    });
+    renderQueueStatus();
     showToast('Generation stopped', 'info');
-    addLog('info', 'Generation stopped by user');
   } catch (err) {
     showToast('Stop failed: ' + err.message, 'error');
   }
@@ -270,9 +275,9 @@ function handleProgressUpdate(message) {
 
   switch (type) {
     case 'STARTED':
+      setQueueItemStatus(data.currentIndex, 'running');
       document.getElementById('progressText').textContent =
-        `Generating: ${data.prompt.substring(0, 55)}…`;
-      addLog('info', `[${data.currentIndex + 1}] ${data.prompt.substring(0, 60)}`);
+        `Generating [${data.currentIndex + 1}]: ${data.prompt.substring(0, 45)}…`;
       break;
 
     case 'PROGRESS':
@@ -282,13 +287,25 @@ function handleProgressUpdate(message) {
       break;
 
     case 'SAVED':
-      addLog('success', `Saved: ${data.filename.split('/').pop()}`);
+      // Find the running item and mark it done
+      {
+        const idx = queueItems.findIndex(i => i.status === 'running');
+        if (idx !== -1) setQueueItemStatus(idx, 'success');
+      }
       break;
 
     case 'ERROR':
-      addLog('error', `Error [${data.index + 1}]: ${data.error}`);
+      setQueueItemStatus(data.index, 'failed', data.error);
       document.getElementById('progressText').textContent =
         `Error on item ${data.index + 1} — continuing…`;
+      break;
+
+    case 'RETRY_SUCCESS':
+      setQueueItemStatus(data.index, 'success');
+      break;
+
+    case 'RETRY_ERROR':
+      setQueueItemStatus(data.index, 'failed', data.error);
       break;
 
     case 'COMPLETE':
@@ -296,9 +313,8 @@ function handleProgressUpdate(message) {
       syncGeneratingUI(false);
       updateProgressBar(data.totalGenerated, data.total || data.totalGenerated);
       document.getElementById('progressText').textContent =
-        `✓ Done — ${data.totalGenerated} images saved (${data.errorCount} errors)`;
+        `✓ Done — ${data.totalGenerated} saved, ${data.errorCount} failed`;
       showToast(`Complete! ${data.totalGenerated} images saved.`, 'success');
-      addLog('success', `Queue complete — ${data.totalGenerated} images generated`);
       break;
   }
 }
@@ -313,25 +329,74 @@ function showProgress(visible) {
   document.getElementById('progressSection').style.display = visible ? 'block' : 'none';
 }
 
-// ==================== LOG ====================
+// ==================== QUEUE STATUS ====================
 
-function addLog(type, msg) {
-  const container = document.getElementById('logContainer');
-  const empty = container.querySelector('.log-empty');
-  if (empty) empty.remove();
-
-  const now = new Date();
-  const time = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
-
-  const item = document.createElement('div');
-  item.className = `log-item ${type}`;
-  item.innerHTML = `<span class="log-dot"></span><span class="log-msg">${escapeHtml(msg)}</span><span class="log-time">${time}</span>`;
-  container.appendChild(item);
-  container.scrollTop = container.scrollHeight;
+function initQueueStatus(prompts) {
+  queueItems = prompts.map(p => ({ prompt: p.trim(), status: 'pending', error: null }));
+  renderQueueStatus();
+  updateQsSummary();
 }
 
-function clearLog() {
-  document.getElementById('logContainer').innerHTML = '<div class="log-empty">No generations yet. Start the queue to begin.</div>';
+function setQueueItemStatus(index, status, error = null) {
+  if (index < 0 || index >= queueItems.length) return;
+  queueItems[index].status = status;
+  queueItems[index].error  = error;
+  renderQueueStatus();
+  updateQsSummary();
+  const el = document.querySelector(`.qs-item[data-index="${index}"]`);
+  if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function renderQueueStatus() {
+  const list = document.getElementById('queueStatusList');
+  list.innerHTML = '';
+
+  if (!queueItems.length) {
+    list.innerHTML = '<div class="qs-empty">Start generation to track each prompt here.</div>';
+    return;
+  }
+
+  queueItems.forEach((item, i) => {
+    const label = { pending: 'Pending', running: 'Generating…', success: 'Done', failed: 'Failed' }[item.status];
+    const retryBtn = item.status === 'failed'
+      ? `<button class="qs-retry" data-index="${i}">↺ Retry</button>`
+      : '';
+    const el = document.createElement('div');
+    el.className = `qs-item qs-${item.status}`;
+    el.dataset.index = i;
+    el.innerHTML =
+      `<span class="qs-num">${String(i + 1).padStart(2, '0')}</span>` +
+      `<span class="qs-dot"></span>` +
+      `<span class="qs-text" title="${escapeHtml(item.prompt)}">${escapeHtml(item.prompt.length > 52 ? item.prompt.substring(0, 52) + '…' : item.prompt)}</span>` +
+      `<span class="qs-label">${label}</span>` +
+      retryBtn;
+    list.appendChild(el);
+  });
+
+  list.querySelectorAll('.qs-retry').forEach(btn => {
+    btn.addEventListener('click', () => retryQueueItem(parseInt(btn.dataset.index)));
+  });
+}
+
+function updateQsSummary() {
+  if (!queueItems.length) { document.getElementById('qsStats').textContent = ''; return; }
+  const done   = queueItems.filter(i => i.status === 'success').length;
+  const failed = queueItems.filter(i => i.status === 'failed').length;
+  const left   = queueItems.filter(i => i.status === 'pending' || i.status === 'running').length;
+  document.getElementById('qsStats').textContent =
+    `${done}✓  ${failed}✗  ${left} left`;
+}
+
+async function retryQueueItem(index) {
+  const item = queueItems[index];
+  if (!item) return;
+  setQueueItemStatus(index, 'running');
+  try {
+    await sendToTab({ action: 'REGENERATE_INDEX', data: { index, prompt: item.prompt } });
+  } catch (err) {
+    setQueueItemStatus(index, 'failed', err.message);
+    showToast('Retry failed: ' + err.message, 'error');
+  }
 }
 
 // ==================== UI HELPERS ====================
