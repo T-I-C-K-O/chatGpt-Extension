@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatGPT Image Batch Generator</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <!-- ── HEADER ── -->
+  <div class="header">
+    <div class="header-inner">
+      <div class="logo-group">
+        <div class="logo-icon">
+          <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+            <rect width="36" height="36" rx="8" fill="url(#g1)"/>
+            <rect x="6" y="8" width="24" height="18" rx="3" stroke="#fff" stroke-width="1.8"/>
+            <circle cx="13" cy="13" r="2.5" fill="#06b6d4"/>
+            <path d="M6 22 L13 16 L18 19 L24 13 L30 18 L30 26 L6 26Z" fill="url(#g2)" opacity="0.9"/>
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="36" y2="36">
+                <stop stop-color="#7c3aed"/>
+                <stop offset="1" stop-color="#2563eb"/>
+              </linearGradient>
+              <linearGradient id="g2" x1="6" y1="13" x2="30" y2="26">
+                <stop stop-color="#7c3aed" stop-opacity="0.8"/>
+                <stop offset="1" stop-color="#06b6d4" stop-opacity="0.8"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div class="logo-text">
+          <h1>ChatGPT Image<br>Generator</h1>
+          <span class="version">v1.0.0 · by BatchAI</span>
+        </div>
+      </div>
+      <div class="lang-badge">EN</div>
+    </div>
+  </div>
+
+  <!-- ── STATUS BAR ── -->
+  <div class="status-bar">
+    <div class="status-left">
+      <span class="status-dot" id="statusDot"></span>
+      <span class="status-text" id="statusText">Checking connection...</span>
+    </div>
+    <button id="goToBtn" class="btn-go" style="display:none">Go to ChatGPT →</button>
+  </div>
+
+  <!-- ── CHARACTER CONSISTENCY ── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title-group">
+        <span class="card-title">Character Consistency</span>
+        <span class="card-desc">Prepend a character prompt to every generation</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="characterToggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div id="characterSection" class="character-section" style="display:none">
+      <textarea
+        id="characterPrompt"
+        class="textarea"
+        rows="3"
+        placeholder="Describe your character consistently, e.g: A young woman with long red hair and blue eyes, wearing a white dress, detailed illustration style"
+      ></textarea>
+    </div>
+  </div>
+
+  <!-- ── PROMPT QUEUE ── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">PROMPT QUEUE</span>
+      <span class="queue-badge"><span id="queueCount">0</span> prompts</span>
+    </div>
+    <p class="section-desc">One prompt per line · list updates as you type</p>
+    <textarea
+      id="promptQueue"
+      class="textarea queue-textarea"
+      placeholder="A red bicycle on a rainy street&#10;A watercolor fox in a forest&#10;A futuristic city skyline at dusk&#10;An astronaut floating in a neon galaxy"
+    ></textarea>
+    <button id="uploadTxtBtn" class="btn-upload">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+        <path d="M7 1v8M4 4l3-3 3 3M2 11h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      UPLOAD .TXT FILE
+    </button>
+    <input type="file" id="fileInput" accept=".txt" style="display:none">
+  </div>
+
+  <!-- ── SETTINGS ── -->
+  <div class="settings-section">
+    <div class="setting-row">
+      <span class="setting-label">Auto download generated images</span>
+      <label class="toggle">
+        <input type="checkbox" id="autoDownloadToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="setting-row">
+      <span class="setting-label">Include serial number in filename</span>
+      <label class="toggle">
+        <input type="checkbox" id="serialToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="setting-row">
+      <span class="setting-label">Delay between images (seconds)</span>
+      <input type="number" id="delay" class="input-small" value="4" min="2" max="60">
+    </div>
+    <div class="setting-row">
+      <span class="setting-label">Download folder name</span>
+      <input type="text" id="folderName" class="input-text" value="chatgpt-images" placeholder="folder-name">
+    </div>
+  </div>
+
+  <!-- ── PROGRESS ── -->
+  <div id="progressSection" class="progress-section" style="display:none">
+    <div class="progress-row">
+      <div class="progress-track">
+        <div class="progress-fill" id="progressFill" style="width:0%"></div>
+      </div>
+      <span class="progress-counter" id="progressCounter">0 / 0</span>
+    </div>
+    <div class="progress-text" id="progressText">Initializing...</div>
+  </div>
+
+  <!-- ── CONTROLS ── -->
+  <div class="controls">
+    <button id="startBtn" class="btn-primary" disabled>
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+        <polygon points="2,1 11,6 2,11"/>
+      </svg>
+      START GENERATION
+    </button>
+    <button id="stopBtn" class="btn-danger" style="display:none">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+        <rect x="1" y="1" width="10" height="10" rx="1"/>
+      </svg>
+      STOP
+    </button>
+    <button id="regenBtn" class="btn-secondary" disabled>
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+        <path d="M1.5 7A5.5 5.5 0 0 1 12 4.5M12.5 7A5.5 5.5 0 0 1 2 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M10 2.5l2 2-2 2M4 9.5l-2 2 2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      REGENERATE LAST
+    </button>
+  </div>
+
+  <!-- ── GENERATION LOG ── -->
+  <div class="log-section">
+    <div class="log-header">
+      <span class="log-title">GENERATION LOG</span>
+      <button id="clearLogBtn" class="btn-clear">Clear</button>
+    </div>
+    <div id="logContainer" class="log-container">
+      <div class="log-empty">No generations yet. Start the queue to begin.</div>
+    </div>
+  </div>
+
+  <!-- ── TOAST ── -->
+  <div id="toast" class="toast"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  Run this file once in any browser (double-click it) to generate the 4 PNG icon files.
+  It will auto-download: icon16.png, icon32.png, icon48.png, icon128.png
+  Move the downloaded files into the "icons/" folder of this extension.
+-->
+<head>
+  <meta charset="UTF-8">
+  <title>Generate Extension Icons</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; background:#111; color:#eee; }
+    canvas { border:1px solid #333; margin:8px; image-rendering:pixelated; }
+    button { margin-top:16px; padding:10px 24px; background:#7c3aed; color:#fff; border:none; border-radius:6px; font-size:14px; cursor:pointer; }
+    button:hover { opacity:.85; }
+    p { color:#aaa; font-size:13px; }
+  </style>
+</head>
+<body>
+  <h2>Icon Generator — ChatGPT Image Batch Generator</h2>
+  <p>Click the button below. Four icon PNGs will be downloaded automatically.</p>
+  <div id="canvases"></div>
+  <button onclick="generateAll()">Generate & Download All Icons</button>
+
+  <script>
+    const SIZES = [16, 32, 48, 128];
+
+    function drawIcon(canvas) {
+      const s  = canvas.width;
+      const cx = canvas.getContext('2d');
+
+      // Background gradient
+      const bg = cx.createLinearGradient(0, 0, s, s);
+      bg.addColorStop(0,   '#1a0a35');
+      bg.addColorStop(1,   '#0f1a3a');
+      cx.fillStyle = bg;
+      roundRect(cx, 0, 0, s, s, s * 0.18);
+      cx.fill();
+
+      // Photo frame border
+      const pad = s * 0.10;
+      const fw  = s - pad * 2;
+      const fh  = s - pad * 2;
+      cx.strokeStyle = '#7c3aed';
+      cx.lineWidth   = Math.max(1, s * 0.055);
+      roundRect(cx, pad, pad, fw, fh, s * 0.08);
+      cx.stroke();
+
+      // Sky gradient (inside frame)
+      const sky = cx.createLinearGradient(pad, pad, pad, pad + fh * 0.6);
+      sky.addColorStop(0, 'rgba(6,182,212,0.15)');
+      sky.addColorStop(1, 'rgba(124,58,237,0.05)');
+      cx.fillStyle = sky;
+      roundRect(cx, pad + 1, pad + 1, fw - 2, fh - 2, s * 0.06);
+      cx.fill();
+
+      // Sun / circle
+      const sr = s * 0.10;
+      cx.fillStyle = '#06b6d4';
+      cx.beginPath();
+      cx.arc(pad + fw * 0.70, pad + fh * 0.28, sr, 0, Math.PI * 2);
+      cx.fill();
+
+      // Mountain silhouette
+      const base = pad + fh * 0.82;
+      cx.fillStyle = 'rgba(124,58,237,0.85)';
+      cx.beginPath();
+      cx.moveTo(pad,           base);
+      cx.lineTo(pad + fw*0.22, pad + fh*0.42);
+      cx.lineTo(pad + fw*0.42, pad + fh*0.62);
+      cx.lineTo(pad + fw*0.60, pad + fh*0.36);
+      cx.lineTo(pad + fw*0.80, pad + fh*0.55);
+      cx.lineTo(pad + fw,      base);
+      cx.closePath();
+      cx.fill();
+
+      // Sparkle dots (only on larger icons)
+      if (s >= 48) {
+        const dots = [
+          [pad + fw*0.18, pad + fh*0.18],
+          [pad + fw*0.50, pad + fh*0.12],
+          [pad + fw*0.85, pad + fh*0.42],
+        ];
+        cx.fillStyle = '#a78bfa';
+        dots.forEach(([dx, dy]) => {
+          cx.beginPath();
+          cx.arc(dx, dy, Math.max(1, s*0.025), 0, Math.PI*2);
+          cx.fill();
+        });
+      }
+    }
+
+    function roundRect(cx, x, y, w, h, r) {
+      cx.beginPath();
+      cx.moveTo(x + r, y);
+      cx.lineTo(x + w - r, y);
+      cx.quadraticCurveTo(x + w, y, x + w, y + r);
+      cx.lineTo(x + w, y + h - r);
+      cx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      cx.lineTo(x + r, y + h);
+      cx.quadraticCurveTo(x, y + h, x, y + h - r);
+      cx.lineTo(x, y + r);
+      cx.quadraticCurveTo(x, y, x + r, y);
+      cx.closePath();
+    }
+
+    function generateAll() {
+      const container = document.getElementById('canvases');
+      container.innerHTML = '';
+
+      SIZES.forEach(size => {
+        const canvas   = document.createElement('canvas');
+        canvas.width   = size;
+        canvas.height  = size;
+        canvas.title   = `icon${size}.png`;
+        drawIcon(canvas);
+
+        // Preview (upscale small ones so they're visible)
+        const preview   = document.createElement('canvas');
+        const pSize     = Math.max(size, 64);
+        preview.width   = pSize;
+        preview.height  = pSize;
+        preview.title   = `Preview ${size}×${size}`;
+        const pc = preview.getContext('2d');
+        pc.imageSmoothingEnabled = false;
+        pc.drawImage(canvas, 0, 0, pSize, pSize);
+        container.appendChild(preview);
+
+        // Download
+        canvas.toBlob(blob => {
+          const a    = document.createElement('a');
+          a.href     = URL.createObjectURL(blob);
+          a.download = `icon${size}.png`;
+          a.click();
+          URL.revokeObjectURL(a.href);
+        }, 'image/png');
+      });
+
+      alert('Icons downloaded! Move them into the "icons/" folder of the extension.');
+    }
+  </script>
+</body>
+</html>
