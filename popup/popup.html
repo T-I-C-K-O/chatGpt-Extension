@@ -67,6 +67,9 @@
         rows="3"
         placeholder="Describe your character consistently, e.g: A young woman with long red hair and blue eyes, wearing a white dress, detailed illustration style"
       ></textarea>
+      <label class="file-label" for="characterBibleInput">Character bible image</label>
+      <input type="file" id="characterBibleInput" accept="image/*" class="file-input">
+      <span id="characterBibleName" class="file-name">No image selected</span>
     </div>
   </div>
 
@@ -109,7 +112,7 @@
     </div>
     <div class="setting-row">
       <span class="setting-label">Delay between images (seconds)</span>
-      <input type="number" id="delay" class="input-small" value="4" min="2" max="60">
+      <input type="number" id="delay" class="input-small" value="0" min="0" max="60">
     </div>
     <div class="setting-row">
       <span class="setting-label">Download folder name</span>

@@ -32,6 +32,7 @@ const SEL = {
 
 const TIMEOUTS = {
   GENERATION_DONE: 180_000,
+  IMAGE_SETTLE: 900,
 };
 
 // ==================== STATE ====================
@@ -126,6 +127,10 @@ async function startGeneration(data) {
   state.totalGenerated = 0;
   state.errorCount     = 0;
 
+  if (data.characterBible) {
+    await attachCharacterBible(data.characterBible, data.characterBibleName);
+  }
+
   await processQueue();
 }
 
@@ -171,8 +176,9 @@ async function processQueue() {
     }
   }
 
+  const stopped = !state.isRunning;
   state.isRunning = false;
-  notify('COMPLETE', {
+  notify(stopped ? 'STOPPED' : 'COMPLETE', {
     totalGenerated: state.totalGenerated,
     total:          state.queue.length,
     errorCount:     state.errorCount,
@@ -195,6 +201,20 @@ async function generateOne(fullPrompt, filename) {
       notify('SAVED', { filename: fname });
     }
   }
+}
+
+async function attachCharacterBible(dataUrl, fileName = 'character-bible.png') {
+  const fileInput = document.querySelector('input[type="file"]');
+  if (!fileInput) throw new Error('ChatGPT file upload input not found');
+
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  const file = new File([blob], fileName, { type: blob.type || 'image/png' });
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  fileInput.files = transfer.files;
+  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await sleep(1200);
 }
 
 // ==================== CHATGPT DOM INTERACTION ====================
@@ -288,6 +308,7 @@ function watchForNewGeneratedImage() {
     if (!state.isRunning) { reject(new Error('Stopped by user')); return; }
 
     const baselineCount = countAssistantMessages();
+    let settleTimer = null;
 
     const deadline = setTimeout(() => {
       observer.disconnect();
@@ -295,6 +316,7 @@ function watchForNewGeneratedImage() {
     }, TIMEOUTS.GENERATION_DONE);
 
     function done(srcs) {
+      if (settleTimer) clearTimeout(settleTimer);
       clearTimeout(deadline);
       observer.disconnect();
       resolve(srcs);
@@ -310,8 +332,11 @@ function watchForNewGeneratedImage() {
       if (countAssistantMessages() <= baselineCount) return;
       const lastMsg = getLastAssistantMessage();
       if (!lastMsg) return;
-      const imgs = Array.from(lastMsg.querySelectorAll('img')).filter(isGeneratedImage);
-      if (imgs.length) done(imgs.map(img => img.src));
+      const imgs = Array.from(lastMsg.querySelectorAll('img'));
+      const generated = imgs.filter(isGeneratedImage);
+      if (!generated.length || !generated.every(img => img.complete && img.naturalWidth > 0)) return;
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => done(generated.map(img => img.src)), TIMEOUTS.IMAGE_SETTLE);
     }
 
     function attachLoad(img) {
@@ -337,7 +362,7 @@ function watchForNewGeneratedImage() {
       tryResolve();
     });
 
-    observer.observe(document.body, {
+    observer.observe(document.querySelector('main') || document.body, {
       childList:       true,
       subtree:         true,
       attributes:      true,
@@ -355,9 +380,10 @@ async function downloadImage(src, filename) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
       { action: 'DOWNLOAD_IMAGE', data: { url: src, filename } },
-      res => {
+      response => {
         if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-        else resolve(res);
+        else if (!response?.success) reject(new Error(response?.error || 'Download failed'));
+        else resolve(response);
       }
     );
   });
@@ -367,7 +393,10 @@ async function downloadImage(src, filename) {
 
 function buildFullPrompt(raw) {
   const char = (state.settings.characterPrompt || '').trim();
-  return char ? `${char}\n\n${raw.trim()}` : raw.trim();
+  const bibleNote = state.settings.characterBible
+    ? 'Use the uploaded character bible image as the visual reference and keep the character consistent.'
+    : '';
+  return [bibleNote, char, raw.trim()].filter(Boolean).join('\n\n');
 }
 
 function buildFilename(raw, index) {
@@ -415,5 +444,5 @@ function sleep(ms) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return str.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 }

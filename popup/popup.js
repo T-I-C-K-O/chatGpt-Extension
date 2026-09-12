@@ -26,6 +26,9 @@ async function loadSettings() {
   if (settings.characterPrompt) {
     document.getElementById('characterPrompt').value = settings.characterPrompt;
   }
+  if (settings.characterBibleName) {
+    document.getElementById('characterBibleName').textContent = settings.characterBibleName;
+  }
   if (settings.prompts) {
     document.getElementById('promptQueue').value = settings.prompts;
     updateQueueCount();
@@ -50,9 +53,10 @@ function collectSettings() {
     characterPrompt: document.getElementById('characterPrompt').value,
     prompts: document.getElementById('promptQueue').value,
     downloadFolder: document.getElementById('folderName').value.trim() || 'chatgpt-images',
-    delay: Math.max(2, parseInt(document.getElementById('delay').value) || 4),
+    delay: Math.max(0, Number.parseInt(document.getElementById('delay').value, 10) || 0),
     includeSerial: document.getElementById('serialToggle').checked,
     autoDownload: document.getElementById('autoDownloadToggle').checked,
+    characterBibleName: document.getElementById('characterBibleName').textContent,
   };
 }
 
@@ -151,6 +155,7 @@ function setupEventListeners() {
     document.getElementById('fileInput').click();
   });
   document.getElementById('fileInput').addEventListener('change', handleFileUpload);
+  document.getElementById('characterBibleInput').addEventListener('change', handleCharacterBibleUpload);
 
   // All settings fields
   ['folderName', 'delay', 'characterPrompt'].forEach(id => {
@@ -214,6 +219,12 @@ async function startGeneration() {
     return;
   }
 
+  const bibleFile = document.getElementById('characterBibleInput').files[0];
+  let characterBible = null;
+  if (bibleFile) {
+    characterBible = await readFileAsDataUrl(bibleFile);
+  }
+
   const payload = {
     prompts,
     characterPrompt: s.characterEnabled ? s.characterPrompt : '',
@@ -221,6 +232,8 @@ async function startGeneration() {
     delay: s.delay * 1000,
     includeSerial: s.includeSerial,
     autoDownload: s.autoDownload,
+    characterBible,
+    characterBibleName: bibleFile?.name || '',
   };
 
   try {
@@ -234,6 +247,21 @@ async function startGeneration() {
   } catch (err) {
     showToast('Failed to start: ' + err.message, 'error');
   }
+}
+
+function handleCharacterBibleUpload(event) {
+  const file = event.target.files[0];
+  document.getElementById('characterBibleName').textContent = file?.name || 'No image selected';
+  saveSettingsDebounced();
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Could not read the character bible image'));
+    reader.readAsDataURL(file);
+  });
 }
 
 async function stopGeneration() {
@@ -315,6 +343,13 @@ function handleProgressUpdate(message) {
       document.getElementById('progressText').textContent =
         `✓ Done — ${data.totalGenerated} saved, ${data.errorCount} failed`;
       showToast(`Complete! ${data.totalGenerated} images saved.`, 'success');
+      break;
+
+    case 'STOPPED':
+      isGenerating = false;
+      syncGeneratingUI(false);
+      document.getElementById('progressText').textContent =
+        `${data.totalGenerated} saved · generation stopped`;
       break;
   }
 }

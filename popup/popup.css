@@ -153,6 +153,9 @@ html, body {
   border-top: 1px solid var(--border-dim);
   padding-top: 10px;
 }
+.file-label { display: block; margin-top: 9px; font-size: 11px; color: var(--text-dim); }
+.file-input { width: 100%; margin-top: 5px; color: var(--text-dim); font-size: 11px; }
+.file-name { display: block; margin-top: 4px; color: var(--text-muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ===== SECTION ===== */
 .section {
