@@ -185,18 +185,21 @@ async function processQueue() {
   });
 }
 
-// ==================== SINGLE GENERATION ====================
 async function generateOne(fullPrompt, filename) {
   await typeInChatGPT(fullPrompt);
   await sleep(400);
+
+  const imagePromise = watchForNewGeneratedImage();
   await clickSend();
 
-  // Resolves the exact moment a generated image finishes loading — zero static waits
-  const srcs = await watchForNewGeneratedImage();
+  const srcs = [...new Set(await imagePromise)];
 
   if (state.settings.autoDownload !== false) {
     for (let i = 0; i < srcs.length; i++) {
-      const fname = srcs.length > 1 ? filename.replace(/\.png$/, `_${i + 1}.png`) : filename;
+      const fname = srcs.length > 1
+        ? filename.replace(/\.png$/, `_${i + 1}.png`)
+        : filename;
+
       await downloadImage(srcs[i], fname);
       notify('SAVED', { filename: fname });
     }
