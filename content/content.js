@@ -194,13 +194,22 @@ async function processQueue() {
 }
 
 async function generateOne(fullPrompt, filename) {
+  if (state.settings.characterBible) {
+    await attachCharacterBible(state.settings.characterBible, state.settings.characterBibleName);
+  }
+
   await typeInChatGPT(fullPrompt);
   await sleep(400);
 
-  const imagePromise = watchForNewGeneratedImage();
-  await clickSend();
+  const watcher = watchForNewGeneratedImage();
+  try {
+    await clickSend();
+  } catch (err) {
+    watcher.cancel(err); // avoid leaving a stale observer running
+    throw err;
+  }
 
-  const srcs = [...new Set(await imagePromise)];
+  const srcs = [...new Set(await watcher.promise)]; // .promise, not the watcher object
 
   if (state.settings.autoDownload !== false) {
     for (let i = 0; i < srcs.length; i++) {
