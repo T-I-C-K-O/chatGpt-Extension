@@ -18,28 +18,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+const downloadedUrls = new Set();
+const pendingDownloads = new Map(); 
+  
+
 function handleDownload(data, sendResponse) {
   const { url, filename } = data;
 
-  // Sanitize filename: strip leading slashes, prevent path traversal
+  if (!url || downloadedUrls.has(url)) {
+    sendResponse({ success: true, duplicate: true });
+    return;
+  }
+
+  if (pendingDownloads.has(url)) {
+    pendingDownloads.get(url).then(sendResponse);
+    return;
+  }
+
   const safeFilename = sanitizeFilename(filename);
 
-  chrome.downloads.download(
-    {
-      url,
-      filename: safeFilename,
-      saveAs: false,
-      conflictAction: 'uniquify',
-    },
-    downloadId => {
-      if (chrome.runtime.lastError) {
-        console.error('[BG] Download failed:', chrome.runtime.lastError.message);
-        sendResponse({ success: false, error: chrome.runtime.lastError.message });
-      } else {
-        sendResponse({ success: true, downloadId });
+  const downloadPromise = new Promise(resolve => {
+    chrome.downloads.download(
+      {
+        url,
+        filename: safeFilename,
+        saveAs: false,
+        conflictAction: 'uniquify',
+      },
+      downloadId => {
+        const result = chrome.runtime.lastError
+          ? { success: false, error: chrome.runtime.lastError.message }
+          : { success: true, downloadId };
+
+        if (result.success) downloadedUrls.add(url);
+        pendingDownloads.delete(url);
+        resolve(result);
       }
-    }
-  );
+    );
+  });
+
+  pendingDownloads.set(url, downloadPromise);
+  downloadPromise.then(sendResponse);
 }
 
 function sanitizeFilename(filename) {
