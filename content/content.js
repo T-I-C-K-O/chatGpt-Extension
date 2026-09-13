@@ -180,7 +180,7 @@ async function processQueue() {
     });
 
     if (state.currentIndex < state.queue.length && state.isRunning) {
-      await sleep(state.settings.delay || 4000);
+      if (state.settings.delay > 0) await sleep(state.settings.delay);
     }
   }
 
@@ -194,6 +194,8 @@ async function processQueue() {
 }
 
 async function generateOne(fullPrompt, filename) {
+  if(!state.isRunning) throw new Error('Generation is not running');
+  
   if (state.settings.characterBible) {
     await attachCharacterBible(state.settings.characterBible, state.settings.characterBibleName);
   }
@@ -313,6 +315,14 @@ function getLastAssistantMessage() {
   return null;
 }
 
+function getAllAssistantMessages() {
+  for (const sel of SEL.ASSISTANT) {
+    const all = document.querySelectorAll(sel);
+    if (all.length) return Array.from(all);
+  }
+  return [];
+}
+
 function isGeneratedImage(img) {
   return (
     img.naturalWidth  >= 100 &&
@@ -367,7 +377,7 @@ function watchForNewGeneratedImage() {
 
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => {
-      finish(() => watcher.resolve(generated.map(img => img.src)));
+      finish(() => watcher.resolve([...new Set(generated.map(img => img.src))]));
     }, TIMEOUTS.IMAGE_SETTLE);
   }
 

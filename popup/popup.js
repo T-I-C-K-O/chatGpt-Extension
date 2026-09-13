@@ -2,6 +2,7 @@
 
 // ==================== STATE ====================
 let activeTabId = null;
+let generationTabId = null;
 let isGenerating = false;
 let totalInQueue = 0;
 let queueItems   = []; // { prompt, status: 'pending'|'running'|'success'|'failed', error }
@@ -73,10 +74,13 @@ async function checkStatus() {
     if (!tab) { setStatusUI('disconnected', 'No active tab'); return; }
 
     activeTabId = tab.id;
+    const stored = await chrome.storage.local.get('generationTabId');
+    generationTabId = stored.generationTabId || null;
+    const statusTabId = generationTabId || activeTabId;
     const url = tab.url || '';
     const onChatGPT = url.includes('chatgpt.com') || url.includes('chat.openai.com');
 
-    if (!onChatGPT) {
+    if (!onChatGPT && !generationTabId) {
       setStatusUI('disconnected', 'Not on ChatGPT');
       document.getElementById('goToBtn').style.display = 'flex';
       setControlsEnabled(false);
@@ -85,7 +89,7 @@ async function checkStatus() {
 
     document.getElementById('goToBtn').style.display = 'none';
 
-    let pong = await sendToTab({ action: 'PING' }).catch(() => null);
+    let pong = await sendToTab({ action: 'PING' }, statusTabId).catch(() => null);
 
     // Content script not yet in this tab — inject it programmatically
     if (!pong || !pong.pong) {
@@ -96,7 +100,7 @@ async function checkStatus() {
           files: ['content/content.js'],
         });
         await sleep(400);
-        pong = await sendToTab({ action: 'PING' }).catch(() => null);
+        pong = await sendToTab({ action: 'PING' }, activeTabId).catch(() => null);
       } catch { /* scripting blocked on this page */ }
     }
 
@@ -105,9 +109,13 @@ async function checkStatus() {
       setControlsEnabled(!isGenerating);
 
       // Sync running state from content script
-      const status = await sendToTab({ action: 'GET_STATUS' }).catch(() => null);
+      const status = await sendToTab({ action: 'GET_STATUS' }, statusTabId).catch(() => null);
       if (status && status.isRunning !== isGenerating) {
         isGenerating = status.isRunning;
+        if (!status.isRunning) {
+          generationTabId = null;
+          await chrome.storage.local.remove('generationTabId');
+        }
         syncGeneratingUI(isGenerating);
         if (isGenerating) {
           showProgress(true);
@@ -237,7 +245,12 @@ async function startGeneration() {
   };
 
   try {
-    await sendToTab({ action: 'START_GENERATION', data: payload });
+    generationTabId = activeTabId;
+    await chrome.storage.local.set({ generationTabId });
+    const response = await sendToTab({ action: 'START_GENERATION', data: payload }, generationTabId);
+    if (response && response.success === false) {
+      throw new Error(response.error || 'Could not start generation');
+    }
     isGenerating = true;
     syncGeneratingUI(true);
     showProgress(true);
@@ -245,6 +258,8 @@ async function startGeneration() {
     document.getElementById('progressText').textContent = 'Starting generation…';
     initQueueStatus(prompts);
   } catch (err) {
+    generationTabId = null;
+    await chrome.storage.local.remove('generationTabId');
     showToast('Failed to start: ' + err.message, 'error');
   }
 }
@@ -266,7 +281,12 @@ function readFileAsDataUrl(file) {
 
 async function stopGeneration() {
   try {
-    await sendToTab({ action: 'STOP_GENERATION' });
+    await sendToTab(
+      { action: 'STOP_GENERATION' },
+      generationTabId || activeTabId
+    );
+    generationTabId = null;
+    await chrome.storage.local.remove('generationTabId');
     isGenerating = false;
     syncGeneratingUI(false);
     // Mark any still-running items as failed
@@ -456,10 +476,10 @@ function showToast(msg, type = 'info') {
 
 // ==================== COMMS ====================
 
-function sendToTab(message) {
+function sendToTab(message, tabId = activeTabId) {
   return new Promise((resolve, reject) => {
-    if (!activeTabId) { reject(new Error('No active tab')); return; }
-    chrome.tabs.sendMessage(activeTabId, message, response => {
+    if (!tabId) { reject(new Error('No target tab')); return; }
+    chrome.tabs.sendMessage(tabId, message, response => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
       } else {

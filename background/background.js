@@ -1,7 +1,12 @@
 'use strict';
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  configureSidePanel();
 });
+chrome.runtime.onStartup.addListener(configureSidePanel);
+
+function configureSidePanel() {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+}
 // === ChatGPT Image Batch Generator — Background Service Worker ===
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -23,45 +28,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 const downloadedUrls = new Set();
 const pendingDownloads = new Map(); 
-  
+const downloadedUrlsReady = chrome.storage.local.get('downloadedUrls').then(({ downloadedUrls: storedUrls = [] }) => {
+  storedUrls.forEach(url => downloadedUrls.add(url));
+});
 
 function handleDownload(data, sendResponse) {
   const { url, filename } = data;
 
-  if (!url || downloadedUrls.has(url)) {
-    sendResponse({ success: true, duplicate: false });
-    return;
-  }
+  downloadedUrlsReady.then(() => {
+    if (!url || downloadedUrls.has(url)) {
+      sendResponse({ success: true, duplicate: Boolean(url) });
+      return;
+    }
 
-  if (pendingDownloads.has(url)) {
-    pendingDownloads.get(url).then(sendResponse);
-    return;
-  }
+    if (pendingDownloads.has(url)) {
+      pendingDownloads.get(url).then(sendResponse);
+      return;
+    }
 
-  const safeFilename = sanitizeFilename(filename);
+    const safeFilename = sanitizeFilename(filename);
 
-  const downloadPromise = new Promise(resolve => {
-    chrome.downloads.download(
-      {
-        url,
-        filename: safeFilename,
-        saveAs: false,
-        conflictAction: 'uniquify',
-      },
-      downloadId => {
-        const result = chrome.runtime.lastError
-          ? { success: false, error: chrome.runtime.lastError.message }
-          : { success: true, downloadId };
+    const downloadPromise = new Promise(resolve => {
+      chrome.downloads.download(
+        {
+          url,
+          filename: safeFilename,
+          saveAs: false,
+          conflictAction: 'uniquify',
+        },
+        downloadId => {
+          const result = chrome.runtime.lastError
+            ? { success: false, error: chrome.runtime.lastError.message }
+            : { success: true, downloadId };
 
-        if (result.success) downloadedUrls.add(url);
-        pendingDownloads.delete(url);
-        resolve(result);
-      }
-    );
+          if (result.success) {
+            downloadedUrls.add(url);
+            chrome.storage.local.set({ downloadedUrls: [...downloadedUrls] });
+          }
+          pendingDownloads.delete(url);
+          resolve(result);
+        }
+      );
+    });
+
+    pendingDownloads.set(url, downloadPromise);
+    downloadPromise.then(sendResponse);
   });
-
-  pendingDownloads.set(url, downloadPromise);
-  downloadPromise.then(sendResponse);
 }
 
 function sanitizeFilename(filename) {
