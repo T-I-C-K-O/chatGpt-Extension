@@ -1,4 +1,7 @@
 'use strict';
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+});
 // === ChatGPT Image Batch Generator — Background Service Worker ===
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -26,7 +29,7 @@ function handleDownload(data, sendResponse) {
   const { url, filename } = data;
 
   if (!url || downloadedUrls.has(url)) {
-    sendResponse({ success: true, duplicate: true });
+    sendResponse({ success: true, duplicate: false });
     return;
   }
 

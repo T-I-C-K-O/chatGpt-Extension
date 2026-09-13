@@ -21,14 +21,15 @@
 }
 
 html, body {
-  width: 390px;
+  width: 100%;
+  max-width: 420px;
+  min-width: 320px;
   min-height: 100px;
   background: var(--bg-deep);
   color: var(--text);
   font-family: -apple-system, 'Segoe UI', sans-serif;
   font-size: 13px;
   line-height: 1.4;
-  overflow-x: hidden;
 }
 
 /* ===== SCROLLBAR ===== */

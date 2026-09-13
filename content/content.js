@@ -71,47 +71,59 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       break;
 
     case 'START_GENERATION':
-      startGeneration(msg.data)
-        .then(() => sendResponse({ success: true }))
-        .catch(e => sendResponse({ success: false, error: e.message }));
-      return true; // keep channel open
+  if (state.isRunning) {
+    sendResponse({ success: false, error: 'Generation already running' });
+    break;
+  }
+  startGeneration(msg.data)
+    .then(() => sendResponse({ success: true }))
+    .catch(e => sendResponse({ success: false, error: e.message }));
+  return true; // keep channel open
 
-    case 'STOP_GENERATION':
+case 'STOP_GENERATION':
+  state.isRunning = false;
+  sendResponse({ success: true });
+  break;
+
+case 'REGENERATE_LAST':
+  if (state.isRunning) {
+    sendResponse({ success: false, error: 'Generation already running' });
+    break;
+  }
+  if (!state.lastFullPrompt) {
+    sendResponse({ success: false, error: 'Nothing to regenerate' });
+  } else {
+    regenerateLast()
+      .then(() => sendResponse({ success: true }))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+  break;
+
+case 'REGENERATE_INDEX': {
+  if (state.isRunning) {
+    sendResponse({ success: false, error: 'Generation already running' });
+    break;
+  }
+  const { index, prompt } = msg.data;
+  const full     = buildFullPrompt(prompt);
+  const filename = buildFilename(prompt, index + 1);
+  state.lastFullPrompt = full;
+  state.lastFilename   = filename;
+  state.isRunning      = true;
+  generateOne(full, filename)
+    .then(() => {
       state.isRunning = false;
+      notify('RETRY_SUCCESS', { index });
       sendResponse({ success: true });
-      break;
-
-    case 'REGENERATE_LAST':
-      if (!state.lastFullPrompt) {
-        sendResponse({ success: false, error: 'Nothing to regenerate' });
-      } else {
-        regenerateLast()
-          .then(() => sendResponse({ success: true }))
-          .catch(e => sendResponse({ success: false, error: e.message }));
-        return true;
-      }
-      break;
-
-    case 'REGENERATE_INDEX': {
-      const { index, prompt } = msg.data;
-      const full     = buildFullPrompt(prompt);
-      const filename = buildFilename(prompt, index + 1);
-      state.lastFullPrompt = full;
-      state.lastFilename   = filename;
-      state.isRunning      = true;
-      generateOne(full, filename)
-        .then(() => {
-          state.isRunning = false;
-          notify('RETRY_SUCCESS', { index });
-          sendResponse({ success: true });
-        })
-        .catch(e => {
-          state.isRunning = false;
-          notify('RETRY_ERROR', { index, error: e.message });
-          sendResponse({ success: false, error: e.message });
-        });
-      return true;
-    }
+    })
+    .catch(e => {
+      state.isRunning = false;
+      notify('RETRY_ERROR', { index, error: e.message });
+      sendResponse({ success: false, error: e.message });
+    });
+  return true;
+}
   }
 });
 
@@ -126,10 +138,6 @@ async function startGeneration(data) {
   state.currentIndex   = 0;
   state.totalGenerated = 0;
   state.errorCount     = 0;
-
-  if (data.characterBible) {
-    await attachCharacterBible(data.characterBible, data.characterBibleName);
-  }
 
   await processQueue();
 }
@@ -218,6 +226,7 @@ async function attachCharacterBible(dataUrl, fileName = 'character-bible.png') {
   fileInput.files = transfer.files;
   fileInput.dispatchEvent(new Event('change', { bubbles: true }));
   await sleep(1200);
+  
 }
 
 // ==================== CHATGPT DOM INTERACTION ====================
@@ -307,75 +316,84 @@ function isGeneratedImage(img) {
 
 // Resolves the instant a qualifying image loads inside a NEW assistant message
 function watchForNewGeneratedImage() {
-  return new Promise((resolve, reject) => {
-    if (!state.isRunning) { reject(new Error('Stopped by user')); return; }
-
-    const baselineCount = countAssistantMessages();
-    let settleTimer = null;
-
-    const deadline = setTimeout(() => {
-      observer.disconnect();
-      reject(new Error('Timeout: no image appeared within 3 minutes'));
-    }, TIMEOUTS.GENERATION_DONE);
-
-    function done(srcs) {
-      if (settleTimer) clearTimeout(settleTimer);
-      clearTimeout(deadline);
-      observer.disconnect();
-      resolve(srcs);
-    }
-
-    function tryResolve() {
-      if (!state.isRunning) {
-        clearTimeout(deadline);
-        observer.disconnect();
-        reject(new Error('Stopped by user'));
-        return;
-      }
-      if (countAssistantMessages() <= baselineCount) return;
-      const lastMsg = getLastAssistantMessage();
-      if (!lastMsg) return;
-      const imgs = Array.from(lastMsg.querySelectorAll('img'));
-      const generated = imgs.filter(isGeneratedImage);
-      if (!generated.length || !generated.every(img => img.complete && img.naturalWidth > 0)) return;
-      if (settleTimer) clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => done(generated.map(img => img.src)), TIMEOUTS.IMAGE_SETTLE);
-    }
-
-    function attachLoad(img) {
-      if (img.complete && img.naturalWidth > 0) {
-        tryResolve();
-      } else {
-        img.addEventListener('load',  tryResolve, { once: true });
-        img.addEventListener('error', tryResolve, { once: true });
-      }
-    }
-
-    const observer = new MutationObserver(mutations => {
-      for (const mut of mutations) {
-        for (const node of mut.addedNodes) {
-          if (node.nodeType !== 1) continue;
-          if (node.tagName === 'IMG') attachLoad(node);
-          else node.querySelectorAll('img').forEach(attachLoad);
-        }
-        if (mut.type === 'attributes' && mut.target.tagName === 'IMG') {
-          attachLoad(mut.target);
-        }
-      }
-      tryResolve();
-    });
-
-    observer.observe(document.querySelector('main') || document.body, {
-      childList:       true,
-      subtree:         true,
-      attributes:      true,
-      attributeFilter: ['src'],
-    });
-
-    tryResolve(); // handle image already rendered before observer attaches
+  const watcher = {};
+  watcher.promise = new Promise((resolve, reject) => {
+    watcher.resolve = resolve;
+    watcher.reject = reject;
   });
-}
 
+  if (!state.isRunning) {
+    watcher.cancel = () => {};
+    watcher.reject(new Error('Stopped by user'));
+    return watcher;
+  }
+
+  const seenMessages = new Set(getAllAssistantMessages());
+  let settleTimer = null;
+  let finished = false;
+
+  const deadline = setTimeout(() => {
+    finish(() => watcher.reject(new Error('Timeout: no image appeared within 3 minutes')));
+  }, TIMEOUTS.GENERATION_DONE);
+
+  function finish(action) {
+    if (finished) return;
+    finished = true;
+    if (settleTimer) clearTimeout(settleTimer);
+    clearTimeout(deadline);
+    observer.disconnect();
+    action();
+  }
+
+  function tryResolve() {
+    if (finished) return;
+    if (!state.isRunning) { finish(() => watcher.reject(new Error('Stopped by user'))); return; }
+
+    const lastMsg = getLastAssistantMessage();
+    if (!lastMsg || seenMessages.has(lastMsg)) return; // still the old turn, not a new one
+
+    const imgs = Array.from(lastMsg.querySelectorAll('img'));
+    const generated = imgs.filter(isGeneratedImage);
+    if (!generated.length || !generated.every(img => img.complete && img.naturalWidth > 0)) return;
+
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      finish(() => watcher.resolve(generated.map(img => img.src)));
+    }, TIMEOUTS.IMAGE_SETTLE);
+  }
+
+  function attachLoad(img) {
+    if (img.complete && img.naturalWidth > 0) tryResolve();
+    else {
+      img.addEventListener('load',  tryResolve, { once: true });
+      img.addEventListener('error', tryResolve, { once: true });
+    }
+  }
+
+  const observer = new MutationObserver(mutations => {
+    for (const mut of mutations) {
+      for (const node of mut.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.tagName === 'IMG') attachLoad(node);
+        else node.querySelectorAll('img').forEach(attachLoad);
+      }
+      if (mut.type === 'attributes' && mut.target.tagName === 'IMG') attachLoad(mut.target);
+    }
+    tryResolve();
+  });
+
+  observer.observe(document.querySelector('main') || document.body, {
+    childList:       true,
+    subtree:         true,
+    attributes:      true,
+    attributeFilter: ['src'],
+  });
+
+  watcher.cancel = reason => finish(() => watcher.reject(reason || new Error('Cancelled')));
+
+  tryResolve();
+  return watcher;
+}
 // ==================== DOWNLOAD ====================
 async function downloadImage(src, filename) {
   // OpenAI DALL-E image URLs already carry SAS auth tokens — pass directly.
