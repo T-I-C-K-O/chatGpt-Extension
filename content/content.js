@@ -129,7 +129,11 @@ case 'REGENERATE_INDEX': {
 
 // ==================== START ====================
 async function startGeneration(data) {
-  const prompts = (data.prompts || []).filter(p => p.trim());
+  const prompts = [...new Set(
+    (data.prompts || [])
+      .map(prompt => String(prompt).trim())
+      .filter(Boolean)
+  )];
   if (!prompts.length) return;
 
   state.queue          = prompts;
@@ -245,41 +249,33 @@ async function typeInChatGPT(text) {
   const input = pickFirst(SEL.INPUT);
   if (!input) throw new Error('ChatGPT input field not found. Make sure you are on the ChatGPT page and it is fully loaded.');
 
-  input.click();
-  input.focus();
-  await sleep(200);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    input.click();
+    input.focus();
+    await sleep(200);
 
-  // Clear existing content
-  document.execCommand('selectAll', false, null);
-  document.execCommand('delete', false, null);
-  await sleep(80);
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+    await sleep(80);
 
-  // Primary: execCommand — works for most contenteditable/ProseMirror setups
-  const ok = document.execCommand('insertText', false, text);
-
-  // Fallback A: ClipboardEvent paste (triggers React synthetic events)
-  if (!ok || !hasText(input, text)) {
-    try {
-      const dt = new DataTransfer();
-      dt.setData('text/plain', text);
-      input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-    } catch { /* ignore */ }
-  }
-
-  // Fallback B: direct innerHTML + React event trick
-  if (!hasText(input, text)) {
-    if (input.contentEditable === 'true') {
-      input.innerHTML = `<p>${escapeHtml(text)}</p>`;
-    } else {
-      // textarea
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-      setter ? setter.call(input, text) : (input.value = text);
+    const inserted = document.execCommand('insertText', false, text);
+    if (!inserted || !hasText(input, text)) {
+      if (input.contentEditable === 'true') {
+        input.innerHTML = `<p>${escapeHtml(text)}</p>`;
+      } else {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        if (setter) setter.call(input, text);
+        else input.value = text;
+      }
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    input.dispatchEvent(new InputEvent('input',  { bubbles: true, data: text, inputType: 'insertText' }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    await sleep(350);
+    if (hasText(input, text)) return;
   }
 
-  await sleep(350);
+  throw new Error('ChatGPT did not accept the next scene prompt');
 }
 
 async function clickSend() {
@@ -347,7 +343,11 @@ function watchForNewGeneratedImage() {
     return watcher;
   }
 
-  const seenMessages = new Set(getAllAssistantMessages());
+  const seenImageSources = new Set(
+    getAllAssistantMessages()
+      .flatMap(message => Array.from(message.querySelectorAll('img')))
+      .map(img => img.src)
+  );
   let settleTimer = null;
   let finished = false;
 
@@ -368,11 +368,14 @@ function watchForNewGeneratedImage() {
     if (finished) return;
     if (!state.isRunning) { finish(() => watcher.reject(new Error('Stopped by user'))); return; }
 
-    const lastMsg = getLastAssistantMessage();
-    if (!lastMsg || seenMessages.has(lastMsg)) return; // still the old turn, not a new one
+    const messages = getAllAssistantMessages();
+    const lastMsg = messages.at(-1);
+    if (!lastMsg) return;
 
-    const imgs = Array.from(lastMsg.querySelectorAll('img'));
-    const generated = imgs.filter(isGeneratedImage);
+    const imgs = messages.flatMap(message => Array.from(message.querySelectorAll('img')));
+    const generated = imgs.filter(img =>
+      isGeneratedImage(img) && !seenImageSources.has(img.src)
+    );
     if (!generated.length || !generated.every(img => img.complete && img.naturalWidth > 0)) return;
 
     if (settleTimer) clearTimeout(settleTimer);
@@ -415,15 +418,30 @@ function watchForNewGeneratedImage() {
 }
 // ==================== DOWNLOAD ====================
 async function downloadImage(src, filename) {
-  // OpenAI DALL-E image URLs already carry SAS auth tokens — pass directly.
-  // Skipping fetch+base64 eliminates 2-4 s of encode/decode overhead per image.
+  // Resolve the temporary/page-scoped URL while the ChatGPT page can access it.
+  let downloadUrl = src;
+  try {
+    const response = await fetch(src);
+    if (!response.ok) throw new Error(`Image request failed (${response.status})`);
+
+    const blob = await response.blob();
+    downloadUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Could not prepare image for download'));
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    // Signed remote URLs can still be downloaded when page fetch is blocked by CORS.
+  }
+
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
-      { action: 'DOWNLOAD_IMAGE', data: { url: src, filename } },
-      response => {
+      { action: 'DOWNLOAD_IMAGE', data: { url: downloadUrl, filename } },
+      result => {
         if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-        else if (!response?.success) reject(new Error(response?.error || 'Download failed'));
-        else resolve(response);
+        else if (!result?.success) reject(new Error(result?.error || 'Download failed'));
+        else resolve(result);
       }
     );
   });
@@ -469,8 +487,9 @@ function pickFirst(selectors) {
 }
 
 function hasText(el, text) {
-  const sample = text.substring(0, 15);
-  return (el.textContent || el.value || '').includes(sample);
+  const actual = el.isContentEditable ? el.innerText || el.textContent : el.value || el.textContent;
+  const normalize = value => String(value).replace(/\s+/g, ' ').trim();
+  return normalize(actual).includes(normalize(text));
 }
 
 function notify(type, data) {

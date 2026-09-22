@@ -155,6 +155,7 @@ function setupEventListeners() {
   // Prompt textarea
   document.getElementById('promptQueue').addEventListener('input', () => {
     updateQueueCount();
+    if (!isGenerating) renderPromptPreview();
     saveSettingsDebounced();
   });
 
@@ -191,14 +192,52 @@ function setupEventListeners() {
   });
 }
 
-// ==================== QUEUE ====================
+// ============== QUEUE ====================
+
+function parsePromptQueue(text) {
+  const source = String(text || '').replace(/\r\n?/g, '\n').trim();
+  if (!source) return [];
+
+  const headers = [...source.matchAll(/^\s*Scene\s+\d+\s*(?::|[-])\s*/gim)];
+  const prompts = headers.length
+    ? headers.map((header, index) => {
+        const start = header.index;
+        const end = headers[index + 1]?.index ?? source.length;
+
+        return source
+          .slice(start, end)
+          .split('\n')
+          .filter(line => {
+            const value = line.trim();
+            return value &&
+              !/^Edit$/i.test(value) &&
+              !/^!?\[[^\]]*\]\(https?:\/\/[^)]*\)\s*$/.test(value);
+          })
+          .join('\n')
+          .trim();
+      })
+    : source.split('\n').map(line => line.trim()).filter(Boolean);
+
+  const seen = new Set();
+  return prompts.filter(prompt => {
+    const key = prompt
+      .replace(/^\s*Scene\s+\d+\s*(?::|-)\s*/i, '')
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 function updateQueueCount() {
-  const lines = document.getElementById('promptQueue').value
-    .split('\n')
-    .filter(l => l.trim());
-  totalInQueue = lines.length;
+  totalInQueue = parsePromptQueue(document.getElementById('promptQueue').value).length;
   document.getElementById('queueCount').textContent = totalInQueue;
+}
+
+function renderPromptPreview() {
+  const prompts = parsePromptQueue(document.getElementById('promptQueue').value);
+  initQueueStatus(prompts);
 }
 
 function handleFileUpload(e) {
@@ -209,6 +248,7 @@ function handleFileUpload(e) {
   reader.onload = evt => {
     document.getElementById('promptQueue').value = evt.target.result;
     updateQueueCount();
+    if (!isGenerating) renderPromptPreview();
     saveSettingsDebounced();
     showToast(`Loaded ${totalInQueue} prompts from file`, 'success');
   };
@@ -220,7 +260,7 @@ function handleFileUpload(e) {
 
 async function startGeneration() {
   const s = collectSettings();
-  const prompts = s.prompts.split('\n').filter(p => p.trim());
+  const prompts = parsePromptQueue(s.prompts);
 
   if (prompts.length === 0) {
     showToast('Add at least one prompt to the queue', 'error');
@@ -244,6 +284,13 @@ async function startGeneration() {
     characterBibleName: bibleFile?.name || '',
   };
 
+  initQueueStatus(prompts);
+  isGenerating = true;
+  syncGeneratingUI(true);
+  showProgress(true);
+  updateProgressBar(0, prompts.length);
+  document.getElementById('progressText').textContent = 'Starting generation…';
+
   try {
     generationTabId = activeTabId;
     await chrome.storage.local.set({ generationTabId });
@@ -251,15 +298,12 @@ async function startGeneration() {
     if (response && response.success === false) {
       throw new Error(response.error || 'Could not start generation');
     }
-    isGenerating = true;
-    syncGeneratingUI(true);
-    showProgress(true);
-    updateProgressBar(0, prompts.length);
-    document.getElementById('progressText').textContent = 'Starting generation…';
-    initQueueStatus(prompts);
   } catch (err) {
     generationTabId = null;
     await chrome.storage.local.remove('generationTabId');
+    isGenerating = false;
+    syncGeneratingUI(false);
+    setQueueItemStatus(0, 'failed', err.message);
     showToast('Failed to start: ' + err.message, 'error');
   }
 }
@@ -307,7 +351,6 @@ async function regenerateLast() {
     const res = await sendToTab({ action: 'REGENERATE_LAST' });
     if (res && res.success) {
       showToast('Regenerating last image…', 'info');
-      addLog('info', 'Regenerating last prompt');
     } else {
       showToast('Nothing to regenerate yet', 'error');
     }
@@ -359,6 +402,7 @@ function handleProgressUpdate(message) {
     case 'COMPLETE':
       isGenerating = false;
       syncGeneratingUI(false);
+      renderQueueStatus();
       updateProgressBar(data.totalGenerated, data.total || data.totalGenerated);
       document.getElementById('progressText').textContent =
         `✓ Done — ${data.totalGenerated} saved, ${data.errorCount} failed`;
@@ -368,6 +412,7 @@ function handleProgressUpdate(message) {
     case 'STOPPED':
       isGenerating = false;
       syncGeneratingUI(false);
+      renderQueueStatus();
       document.getElementById('progressText').textContent =
         `${data.totalGenerated} saved · generation stopped`;
       break;
@@ -387,9 +432,19 @@ function showProgress(visible) {
 // ==================== QUEUE STATUS ====================
 
 function initQueueStatus(prompts) {
-  queueItems = prompts.map(p => ({ prompt: p.trim(), status: 'pending', error: null }));
+  queueItems = prompts.map((prompt, index) => ({
+    prompt: prompt.trim(),
+    sceneLabel: getSceneLabel(prompt, index),
+    status: 'pending',
+    error: null,
+  }));
   renderQueueStatus();
   updateQsSummary();
+}
+
+function getSceneLabel(prompt, index) {
+  const match = prompt.match(/^\s*Scene\s+(\d+)\s*(?::|[-])/i);
+  return match ? `Scene ${match[1]}` : `Prompt ${index + 1}`;
 }
 
 function setQueueItemStatus(index, status, error = null) {
@@ -412,19 +467,21 @@ function renderQueueStatus() {
   }
 
   queueItems.forEach((item, i) => {
-    const label = { pending: 'Pending', running: 'Generating…', success: 'Done', failed: 'Failed' }[item.status];
-    const retryBtn = item.status === 'failed'
-      ? `<button class="qs-retry" data-index="${i}">↺ Retry</button>`
-      : '';
+    const label = { pending: 'Pending', running: 'Generating…', success: 'Generated', failed: 'Failed' }[item.status];
     const el = document.createElement('div');
     el.className = `qs-item qs-${item.status}`;
     el.dataset.index = i;
     el.innerHTML =
       `<span class="qs-num">${String(i + 1).padStart(2, '0')}</span>` +
       `<span class="qs-dot"></span>` +
+      `<span class="qs-content">` +
+      `<strong class="qs-scene">${escapeHtml(item.sceneLabel)}</strong>` +
       `<span class="qs-text" title="${escapeHtml(item.prompt)}">${escapeHtml(item.prompt.length > 52 ? item.prompt.substring(0, 52) + '…' : item.prompt)}</span>` +
+      `</span>` +
       `<span class="qs-label">${label}</span>` +
-      retryBtn;
+      `<span class="qs-actions">` +
+      `<button class="qs-retry" data-index="${i}" ${isGenerating ? 'disabled' : ''}>↺ Regenerate</button>` +
+      `</span>`;
     list.appendChild(el);
   });
 
@@ -446,11 +503,17 @@ async function retryQueueItem(index) {
   const item = queueItems[index];
   if (!item) return;
   setQueueItemStatus(index, 'running');
+  isGenerating = true;
+  syncGeneratingUI(true);
   try {
     await sendToTab({ action: 'REGENERATE_INDEX', data: { index, prompt: item.prompt } });
   } catch (err) {
     setQueueItemStatus(index, 'failed', err.message);
     showToast('Retry failed: ' + err.message, 'error');
+  } finally {
+    isGenerating = false;
+    syncGeneratingUI(false);
+    renderQueueStatus();
   }
 }
 

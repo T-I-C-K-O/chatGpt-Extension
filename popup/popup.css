@@ -428,6 +428,18 @@ html, body {
   border-bottom: 1px solid var(--border-dim);
   min-height: 32px;
 }
+.qs-content {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.qs-scene {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+}
 .qs-item:last-child { border-bottom: none; }
 .qs-num {
   font-size: 10px;
@@ -447,7 +459,6 @@ html, body {
 .qs-success .qs-dot  { background: var(--success); }
 .qs-failed  .qs-dot  { background: var(--danger); }
 .qs-text {
-  flex: 1;
   font-size: 11px;
   color: var(--text-dim);
   overflow: hidden;
@@ -475,6 +486,11 @@ html, body {
   cursor: pointer;
   transition: background 0.15s;
 }
+.qs-retry:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.qs-actions { flex-shrink: 0; }
 .qs-retry:hover { background: rgba(220,38,38,0.3); }
 
 /* ===== GENERATION LOG ===== */
