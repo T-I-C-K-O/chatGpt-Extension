@@ -27,9 +27,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 const downloadedUrls = new Set();
-const pendingDownloads = new Map(); 
+const pendingDownloads = new Map();
+const inFlightDownloads = new Map(); // downloadId -> resolve callback
 const downloadedUrlsReady = chrome.storage.local.get('downloadedUrls').then(({ downloadedUrls: storedUrls = [] }) => {
   storedUrls.forEach(url => downloadedUrls.add(url));
+});
+
+// download() callback only confirms the request was queued, not that the file was saved
+chrome.downloads.onChanged.addListener(delta => {
+  const resolve = inFlightDownloads.get(delta.id);
+  if (!resolve) return;
+
+  if (delta.state?.current === 'complete') {
+    inFlightDownloads.delete(delta.id);
+    resolve({ success: true, downloadId: delta.id });
+  } else if (delta.state?.current === 'interrupted') {
+    inFlightDownloads.delete(delta.id);
+    resolve({ success: false, error: delta.error?.current || 'Download interrupted' });
+  }
 });
 
 function handleDownload(data, sendResponse) {
@@ -50,23 +65,21 @@ function handleDownload(data, sendResponse) {
 
     const downloadPromise = new Promise(resolve => {
       chrome.downloads.download(
-        {
-          url,
-          filename: safeFilename,
-          saveAs: false,
-          conflictAction: 'uniquify',
-        },
+        { url, filename: safeFilename, saveAs: false, conflictAction: 'uniquify' },
         downloadId => {
-          const result = chrome.runtime.lastError
-            ? { success: false, error: chrome.runtime.lastError.message }
-            : { success: true, downloadId };
-
-          if (result.success) {
-            downloadedUrls.add(url);
-            chrome.storage.local.set({ downloadedUrls: [...downloadedUrls] });
+          if (chrome.runtime.lastError || downloadId === undefined) {
+            resolve({ success: false, error: chrome.runtime.lastError?.message || 'Download failed to start' });
+            return;
           }
-          pendingDownloads.delete(url);
-          resolve(result);
+          // wait for the real completion/interruption event instead of trusting the start callback
+          inFlightDownloads.set(downloadId, result => {
+            if (result.success) {
+              downloadedUrls.add(url);
+              chrome.storage.local.set({ downloadedUrls: [...downloadedUrls] });
+            }
+            pendingDownloads.delete(url);
+            resolve(result);
+          });
         }
       );
     });

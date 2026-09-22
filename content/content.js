@@ -23,11 +23,13 @@ const SEL = {
     'button[aria-label*="stop" i]',
     'button[aria-label*="Stop" i]',
   ],
-  ASSISTANT: [
-    '[data-message-author-role="assistant"]',
-    '.agent-turn',
-    '[data-testid*="conversation-turn"][data-testid*="assistant"]',
-  ],
+ASSISTANT: [
+  '[data-message-author-role="assistant"]',
+  '.agent-turn',
+  '[data-testid*="conversation-turn"][data-testid*="assistant"]',
+  'article[data-testid*="conversation-turn"]', // newer ChatGPT layout fallback
+  'div[data-message-id]',                      // generic message container fallback
+],
 };
 
 const TIMEOUTS = {
@@ -321,10 +323,10 @@ function getAllAssistantMessages() {
 
 function isGeneratedImage(img) {
   return (
-    img.naturalWidth  >= 100 &&
-    img.naturalHeight >= 100 &&
+    img.naturalWidth  >= 64 &&
+    img.naturalHeight >= 64 &&
     !!img.src &&
-    !/\/assets\/|logo|avatar|spinner/i.test(img.src) &&
+    !/\/avatar\/|\/logo\.(svg|png)|spinner/i.test(img.src) &&
     !img.src.endsWith('.svg')
   );
 }
@@ -368,11 +370,11 @@ function watchForNewGeneratedImage() {
     if (finished) return;
     if (!state.isRunning) { finish(() => watcher.reject(new Error('Stopped by user'))); return; }
 
-    const messages = getAllAssistantMessages();
-    const lastMsg = messages.at(-1);
-    if (!lastMsg) return;
-
-    const imgs = messages.flatMap(message => Array.from(message.querySelectorAll('img')));
+const messages = getAllAssistantMessages();
+// fall back to scanning the whole main content area if selectors don't match ChatGPT's current DOM
+const imgs = messages.length
+  ? messages.flatMap(message => Array.from(message.querySelectorAll('img')))
+  : Array.from((document.querySelector('main') || document.body).querySelectorAll('img'));
     const generated = imgs.filter(img =>
       isGeneratedImage(img) && !seenImageSources.has(img.src)
     );
@@ -404,12 +406,13 @@ function watchForNewGeneratedImage() {
     tryResolve();
   });
 
-  observer.observe(document.querySelector('main') || document.body, {
-    childList:       true,
-    subtree:         true,
-    attributes:      true,
-    attributeFilter: ['src'],
-  });
+  // always observe body — 'main' can be swapped out by ChatGPT's SPA router mid-generation
+observer.observe(document.body, {
+  childList:       true,
+  subtree:         true,
+  attributes:      true,
+  attributeFilter: ['src'],
+});
 
   watcher.cancel = reason => finish(() => watcher.reject(reason || new Error('Cancelled')));
 

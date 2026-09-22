@@ -198,7 +198,8 @@ function parsePromptQueue(text) {
   const source = String(text || '').replace(/\r\n?/g, '\n').trim();
   if (!source) return [];
 
-  const headers = [...source.matchAll(/^\s*Scene\s+\d+\s*(?::|[-])\s*/gim)];
+  // accept "Scene N:", "Scene N -", "Scene N.", or a bare "Scene N" header
+  const headers = [...source.matchAll(/^\s*Scene\s+\d+\s*(?::|[-]|\.)?\s*/gim)];
   const prompts = headers.length
     ? headers.map((header, index) => {
         const start = header.index;
@@ -218,12 +219,11 @@ function parsePromptQueue(text) {
       })
     : source.split('\n').map(line => line.trim()).filter(Boolean);
 
+  // only drop truly identical entries (same scene number AND same body) —
+  // never dedupe by body text alone, since different scenes can share similar wording
   const seen = new Set();
   return prompts.filter(prompt => {
-    const key = prompt
-      .replace(/^\s*Scene\s+\d+\s*(?::|-)\s*/i, '')
-      .replace(/\s+/g, ' ')
-      .toLowerCase();
+    const key = prompt.replace(/\s+/g, ' ').trim().toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
