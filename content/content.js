@@ -345,10 +345,11 @@ function watchForNewGeneratedImage() {
     return watcher;
   }
 
+  // scan the whole content area instead of relying on brittle assistant-message selectors
+  const scanScope = () => document.querySelector('main') || document.body;
+
   const seenImageSources = new Set(
-    getAllAssistantMessages()
-      .flatMap(message => Array.from(message.querySelectorAll('img')))
-      .map(img => img.src)
+    Array.from(scanScope().querySelectorAll('img')).map(img => img.src)
   );
   let settleTimer = null;
   let finished = false;
@@ -370,11 +371,7 @@ function watchForNewGeneratedImage() {
     if (finished) return;
     if (!state.isRunning) { finish(() => watcher.reject(new Error('Stopped by user'))); return; }
 
-const messages = getAllAssistantMessages();
-// fall back to scanning the whole main content area if selectors don't match ChatGPT's current DOM
-const imgs = messages.length
-  ? messages.flatMap(message => Array.from(message.querySelectorAll('img')))
-  : Array.from((document.querySelector('main') || document.body).querySelectorAll('img'));
+    const imgs = Array.from(scanScope().querySelectorAll('img'));
     const generated = imgs.filter(img =>
       isGeneratedImage(img) && !seenImageSources.has(img.src)
     );
@@ -406,13 +403,12 @@ const imgs = messages.length
     tryResolve();
   });
 
-  // always observe body — 'main' can be swapped out by ChatGPT's SPA router mid-generation
-observer.observe(document.body, {
-  childList:       true,
-  subtree:         true,
-  attributes:      true,
-  attributeFilter: ['src'],
-});
+  observer.observe(document.body, {
+    childList:       true,
+    subtree:         true,
+    attributes:      true,
+    attributeFilter: ['src'],
+  });
 
   watcher.cancel = reason => finish(() => watcher.reject(reason || new Error('Cancelled')));
 
