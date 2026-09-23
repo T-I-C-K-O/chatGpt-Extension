@@ -34,7 +34,7 @@ ASSISTANT: [
 
 const TIMEOUTS = {
   GENERATION_DONE: 180_000,
-  IMAGE_SETTLE: 900,
+  IMAGE_SETTLE: 1200,
 };
 
 // ==================== STATE ====================
@@ -366,10 +366,10 @@ function watchForNewGeneratedImage() {
     observer.disconnect();
     action();
   }
-
   function tryResolve() {
     if (finished) return;
     if (!state.isRunning) { finish(() => watcher.reject(new Error('Stopped by user'))); return; }
+    if (pickFirst(SEL.STOP)) return; // still generating/streaming — image src may still change, don't resolve yet
 
     const imgs = Array.from(scanScope().querySelectorAll('img'));
     const generated = imgs.filter(img =>
@@ -417,26 +417,35 @@ function watchForNewGeneratedImage() {
 }
 // ==================== DOWNLOAD ====================
 async function downloadImage(src, filename) {
-  // Resolve the temporary/page-scoped URL while the ChatGPT page can access it.
   let downloadUrl = src;
-  try {
-    const response = await fetch(src);
-    if (!response.ok) throw new Error(`Image request failed (${response.status})`);
+  let fetchError = null;
 
-    const blob = await response.blob();
-    downloadUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('Could not prepare image for download'));
-      reader.readAsDataURL(blob);
-    });
-  } catch {
-    // Signed remote URLs can still be downloaded when page fetch is blocked by CORS.
+  for (let attempt = 0; attempt < 3 && downloadUrl === src; attempt++) {
+    try {
+      const response = await fetch(src);
+      if (!response.ok) throw new Error(`Image request failed (${response.status})`);
+
+      const blob = await response.blob();
+      downloadUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not prepare image for download'));
+        reader.readAsDataURL(blob);
+      });
+    } catch (err) {
+      fetchError = err;
+      if (attempt < 2) await sleep(300); // blob: URLs can briefly be unavailable right after insertion
+    }
+  }
+
+  // background script has no access to page-scoped blob: URLs — nothing left to fall back to
+  if (downloadUrl === src && src.startsWith('blob:')) {
+    throw fetchError || new Error('Could not read the generated image (blob expired)');
   }
 
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
-      { action: 'DOWNLOAD_IMAGE', data: { url: downloadUrl, filename } },
+      { action: 'DOWNLOAD_IMAGE', data: { url: downloadUrl, filename, sourceKey: src } },
       result => {
         if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
         else if (!result?.success) reject(new Error(result?.error || 'Download failed'));

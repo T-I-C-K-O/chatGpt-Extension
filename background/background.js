@@ -48,16 +48,17 @@ chrome.downloads.onChanged.addListener(delta => {
 });
 
 function handleDownload(data, sendResponse) {
-  const { url, filename } = data;
+  const { url, filename, sourceKey } = data;
+  const dedupeKey = sourceKey || url;
 
   downloadedUrlsReady.then(() => {
-    if (!url || downloadedUrls.has(url)) {
+    if (!url || downloadedUrls.has(dedupeKey)) {
       sendResponse({ success: true, duplicate: Boolean(url) });
       return;
     }
 
-    if (pendingDownloads.has(url)) {
-      pendingDownloads.get(url).then(sendResponse);
+    if (pendingDownloads.has(dedupeKey)) {
+      pendingDownloads.get(dedupeKey).then(sendResponse);
       return;
     }
 
@@ -71,20 +72,19 @@ function handleDownload(data, sendResponse) {
             resolve({ success: false, error: chrome.runtime.lastError?.message || 'Download failed to start' });
             return;
           }
-          // wait for the real completion/interruption event instead of trusting the start callback
           inFlightDownloads.set(downloadId, result => {
             if (result.success) {
-              downloadedUrls.add(url);
+              downloadedUrls.add(dedupeKey);
               chrome.storage.local.set({ downloadedUrls: [...downloadedUrls] });
             }
-            pendingDownloads.delete(url);
+            pendingDownloads.delete(dedupeKey);
             resolve(result);
           });
         }
       );
     });
 
-    pendingDownloads.set(url, downloadPromise);
+    pendingDownloads.set(dedupeKey, downloadPromise);
     downloadPromise.then(sendResponse);
   });
 }
