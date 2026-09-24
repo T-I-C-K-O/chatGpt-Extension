@@ -331,6 +331,10 @@ function isGeneratedImage(img) {
   );
 }
 
+function isUserUploadedImage(img) {
+  return !!img.closest('[data-message-author-role="user"]');
+}
+
 // Resolves the instant a qualifying image loads inside a NEW assistant message
 function watchForNewGeneratedImage() {
   const watcher = {};
@@ -373,7 +377,7 @@ function watchForNewGeneratedImage() {
 
     const imgs = Array.from(scanScope().querySelectorAll('img'));
     const generated = imgs.filter(img =>
-      isGeneratedImage(img) && !seenImageSources.has(img.src)
+      isGeneratedImage(img) && !isUserUploadedImage(img) && !seenImageSources.has(img.src)
     );
     if (!generated.length || !generated.every(img => img.complete && img.naturalWidth > 0)) return;
 
