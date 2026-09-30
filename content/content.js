@@ -332,7 +332,20 @@ function isGeneratedImage(img) {
 }
 
 function isUserUploadedImage(img) {
-  return !!img.closest('[data-message-author-role="user"]');
+  return !!img.closest(
+    '[data-message-author-role="user"], form, [data-testid*="composer"], [data-testid*="attachment"], [data-testid*="file-thumbnail"]'
+  );
+}
+
+// Only images living inside an assistant turn count as generated images
+function isInAssistantTurn(img) {
+  if (img.closest('[data-message-author-role="assistant"], .agent-turn')) return true;
+  const turn = img.closest('article, [data-testid^="conversation-turn"]');
+  if (!turn) return false;
+  if (turn.querySelector('[data-message-author-role="user"]')) return false;
+  return !!turn.querySelector('[data-message-author-role="assistant"]') ||
+         /assistant/i.test(turn.getAttribute('data-testid') || '') ||
+         !!turn.querySelector('.agent-turn');
 }
 
 // Resolves the instant a qualifying image loads inside a NEW assistant message
@@ -377,7 +390,7 @@ function watchForNewGeneratedImage() {
 
     const imgs = Array.from(scanScope().querySelectorAll('img'));
     const generated = imgs.filter(img =>
-      isGeneratedImage(img) && !isUserUploadedImage(img) && !seenImageSources.has(img.src)
+      isGeneratedImage(img) && !isUserUploadedImage(img) && isInAssistantTurn(img) && !seenImageSources.has(img.src)
     );
     if (!generated.length || !generated.every(img => img.complete && img.naturalWidth > 0)) return;
 
