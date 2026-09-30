@@ -465,6 +465,13 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.qs-error {
+  font-size: 10px;
+  color: var(--danger);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .qs-label {
   font-size: 10px;
   flex-shrink: 0;

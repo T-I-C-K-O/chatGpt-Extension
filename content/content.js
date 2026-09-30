@@ -35,6 +35,9 @@ ASSISTANT: [
 const TIMEOUTS = {
   GENERATION_DONE: 180_000,
   IMAGE_SETTLE: 1200,
+  STREAMING_STABLE: 6000,
+  IDLE_QUIET: 1500,
+  IDLE_WAIT: 600_000,
 };
 
 // ==================== STATE ====================
@@ -169,12 +172,25 @@ async function processQueue() {
 
     notify('STARTED', { prompt: raw, currentIndex: state.currentIndex });
 
-    try {
-      await generateOne(full, filename);
-      state.totalGenerated++;
-    } catch (err) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2 && state.isRunning; attempt++) {
+      try {
+        await generateOne(full, filename);
+        state.totalGenerated++;
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.error('[IBG] scene failed', state.currentIndex + 1, `attempt ${attempt + 1}`, err);
+        if (err.fatal || !state.isRunning) break;
+        // Never start anything new while ChatGPT is still working on this scene
+        try { await settleChat(); } catch (e) { lastErr = e; break; }
+      }
+    }
+    if (lastErr) {
       state.errorCount++;
-      notify('ERROR', { error: err.message, index: state.currentIndex });
+      notify('ERROR', { error: lastErr.message, index: state.currentIndex });
+      if (lastErr.fatal) { state.isRunning = false; }
     }
 
     state.currentIndex++;
@@ -199,9 +215,52 @@ async function processQueue() {
   });
 }
 
+// Busy = ChatGPT is generating. Checks the known stop-button selectors, plus any "stop" button
+// inside the composer form (scoped so unrelated page buttons can't match).
+function isChatBusy() {
+  if (pickFirst(SEL.STOP)) return true;
+  const form = pickFirst(SEL.INPUT)?.closest('form');
+  return !!form && Array.from(form.querySelectorAll('button')).some(b =>
+    /stop/i.test(b.getAttribute('aria-label') || '') || /stop/i.test(b.dataset.testid || ''));
+}
+
+// Strictly sequential: never start a prompt while ChatGPT is still working on the previous one.
+// Idle = not busy for IDLE_QUIET ms in a row.
+async function waitForIdle(timeoutMs) {
+  const started = Date.now();
+  let quietSince = 0;
+  let announced = false;
+  while (Date.now() - started < timeoutMs) {
+    if (!state.isRunning) throw new Error('Stopped by user');
+    if (isChatBusy()) {
+      quietSince = 0;
+      if (!announced && Date.now() - started > 3000) {
+        announced = true;
+        notify('WAITING', { text: 'Waiting for ChatGPT to finish…' });
+      }
+    } else if (!quietSince) quietSince = Date.now();
+    else if (Date.now() - quietSince >= TIMEOUTS.IDLE_QUIET) return true;
+    await sleep(300);
+  }
+  return false;
+}
+
+// Wait for ChatGPT to finish; if it never does, press Stop so the next prompt can be sent.
+async function settleChat() {
+  if (await waitForIdle(TIMEOUTS.IDLE_WAIT)) return;
+  pickFirst(SEL.STOP)?.click();
+  if (!(await waitForIdle(15_000))) {
+    const err = new Error('ChatGPT is still busy and could not be stopped — run aborted');
+    err.fatal = true;
+    throw err;
+  }
+}
+
 async function generateOne(fullPrompt, filename) {
   if(!state.isRunning) throw new Error('Generation is not running');
-  
+
+  await settleChat();
+
   if (state.settings.characterBible) {
     await attachCharacterBible(state.settings.characterBible, state.settings.characterBibleName);
   }
@@ -229,6 +288,10 @@ async function generateOne(fullPrompt, filename) {
       notify('SAVED', { filename: fname });
     }
   }
+
+  // Image is saved; let ChatGPT finish (it may still stream text). If it never settles, stop it
+  // so the next prompt can be sent.
+  await settleChat();
 }
 
 async function attachCharacterBible(dataUrl, fileName = 'character-bible.png') {
@@ -243,7 +306,15 @@ async function attachCharacterBible(dataUrl, fileName = 'character-bible.png') {
   fileInput.files = transfer.files;
   fileInput.dispatchEvent(new Event('change', { bubbles: true }));
   await sleep(1200);
-  
+
+  // Wait (bounded) for the upload to finish: the attachment must have an <img> and the send button must be enabled
+  for (let i = 0; i < 40; i++) {
+    const sendBtn = pickFirst(SEL.SEND);
+    const uploading = document.querySelector('form [role="progressbar"], form [class*="spinner" i], form .animate-spin');
+    if (!uploading && sendBtn === null) break; // send button only appears once there is content
+    if (!uploading && sendBtn && !sendBtn.disabled) break;
+    await sleep(500);
+  }
 }
 
 // ==================== CHATGPT DOM INTERACTION ====================
@@ -283,7 +354,7 @@ async function typeInChatGPT(text) {
 async function clickSend() {
   // Re-query each time to get the fresh enabled state
   let retries = 0;
-  while (retries < 15) {
+  while (retries < 40) {
     const btn = pickFirst(SEL.SEND);
     if (btn && !btn.disabled) {
       btn.click();
@@ -341,7 +412,7 @@ function isUserUploadedImage(img) {
 function isInAssistantTurn(img) {
   if (img.closest('[data-message-author-role="assistant"], .agent-turn, [data-turn="assistant"]')) return true;
   const turn = img.closest('article, [data-testid^="conversation-turn"]');
-  if (!turn) return false;
+  if (!turn) return img.naturalWidth >= 256; // unknown layout: trust large images outside user/composer
   if (turn.querySelector('[data-message-author-role="user"]')) return false;
   return !!turn.querySelector('[data-message-author-role="assistant"]') ||
          /assistant/i.test(turn.dataset.testid || '') ||
@@ -368,39 +439,52 @@ function watchForNewGeneratedImage() {
   const seenImageSources = new Set(
     Array.from(scanScope().querySelectorAll('img')).map(img => img.src)
   );
-  let settleTimer = null;
   let finished = false;
+  let lastKey = '';
+  let stableSince = 0;
 
   const deadline = setTimeout(() => {
-    finish(() => watcher.reject(new Error('Timeout: no image appeared within 3 minutes')));
+    finish(() => watcher.reject(new Error(`Timeout: no image appeared within 3 minutes (${describe()})`)));
   }, TIMEOUTS.GENERATION_DONE);
+
+  // Poll as well as observe: state can become "ready" without any further DOM mutation
+  const poll = setInterval(() => tryResolve(), 500);
 
   function finish(action) {
     if (finished) return;
     finished = true;
-    if (settleTimer) clearTimeout(settleTimer);
     clearTimeout(deadline);
+    clearInterval(poll);
     observer.disconnect();
     action();
   }
+
+  // Why nothing qualified — shown in the timeout error so failures are diagnosable
+  function describe() {
+    const imgs = Array.from(scanScope().querySelectorAll('img'));
+    const fresh = imgs.filter(img => !seenImageSources.has(img.src) && img.naturalWidth >= 64);
+    return `stopBtn=${!!pickFirst(SEL.STOP)}, imgs=${imgs.length}, new>=64px=${fresh.length}, ` +
+      `inAssistant=${fresh.filter(isInAssistantTurn).length}, userUploaded=${fresh.filter(isUserUploadedImage).length}`;
+  }
+
   function tryResolve() {
     if (finished) return;
     if (!state.isRunning) { finish(() => watcher.reject(new Error('Stopped by user'))); return; }
-    if (pickFirst(SEL.STOP)) return; // still generating/streaming — image src may still change, don't resolve yet
 
+    const generating = isChatBusy();
     const generated = collectNew();
-    if (!generated.length || !generated.every(img => img.complete && img.naturalWidth > 0)) return;
+    const ready = generated.length > 0 && generated.every(img => img.complete && img.naturalWidth > 0);
+    const key = ready ? generated.map(img => img.src).join('|') : '';
+    if (key !== lastKey) { lastKey = key; stableSince = Date.now(); }
+    if (!ready) return;
 
-    if (settleTimer) clearTimeout(settleTimer);
-    const key = generated.map(img => img.src).join('|');
-    settleTimer = setTimeout(() => {
-      if (finished) return;
-      // Re-check: the src may have been swapped (preview -> final) or streaming restarted
-      const again = collectNew();
-      if (pickFirst(SEL.STOP) || again.map(img => img.src).join('|') !== key) { tryResolve(); return; }
-      console.debug('[IBG] image ready', again.map(img => img.src));
-      finish(() => watcher.resolve([...new Set(again.map(img => img.src))]));
-    }, TIMEOUTS.IMAGE_SETTLE);
+    // While ChatGPT is still streaming the src may change (preview -> final), so demand a longer
+    // stable period; once streaming is over a short settle is enough.
+    const needed = generating ? TIMEOUTS.STREAMING_STABLE : TIMEOUTS.IMAGE_SETTLE;
+    if (Date.now() - stableSince < needed) return;
+
+    console.debug('[IBG] image ready', { generating, srcs: generated.map(img => img.src) });
+    finish(() => watcher.resolve([...new Set(generated.map(img => img.src))]));
   }
 
   function collectNew() {
@@ -455,19 +539,11 @@ function requestDownload(url, filename, sourceKey) {
   });
 }
 
-function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Could not prepare image for download'));
-    reader.readAsDataURL(blob);
-  });
-}
-
 async function downloadImage(src, filename) {
   const errors = [];
 
-  // 1) Read the image in the page (has the session auth) and hand it over as a data URL
+  // 1) Read the image in the page (has the session auth) and hand it over as a blob URL
+  //    (data URLs over ~2 MB are rejected by chrome.downloads; blob URLs have no such limit)
   let blob = null;
   for (let attempt = 0; attempt < 3 && !blob; attempt++) {
     try {
@@ -481,10 +557,13 @@ async function downloadImage(src, filename) {
   }
 
   if (blob) {
+    const blobUrl = URL.createObjectURL(blob);
     try {
-      return await requestDownload(await blobToDataUrl(blob), filename, `${src}#data`);
+      return await requestDownload(blobUrl, filename, `${src}#blob`);
     } catch (err) {
-      errors.push(`data: ${err.message}`);
+      errors.push(`blob: ${err.message}`);
+    } finally {
+      URL.revokeObjectURL(blobUrl);
     }
   }
 
@@ -497,7 +576,9 @@ async function downloadImage(src, filename) {
     }
   }
 
-  throw new Error(`Download failed (${errors.join(' | ')})`);
+  const message = `Download failed (${errors.join(' | ')})`;
+  console.error('[IBG]', message, { src, filename });
+  throw new Error(message);
 }
 
 // ==================== HELPERS ====================

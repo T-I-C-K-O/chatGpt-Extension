@@ -371,6 +371,10 @@ function handleProgressUpdate(message) {
         `Generating [${data.currentIndex + 1}]: ${data.prompt.substring(0, 45)}…`;
       break;
 
+    case 'WAITING':
+      document.getElementById('progressText').textContent = data.text;
+      break;
+
     case 'PROGRESS':
       updateProgressBar(data.currentIndex, data.total);
       document.getElementById('progressText').textContent =
@@ -477,6 +481,9 @@ function renderQueueStatus() {
       `<span class="qs-content">` +
       `<strong class="qs-scene">${escapeHtml(item.sceneLabel)}</strong>` +
       `<span class="qs-text" title="${escapeHtml(item.prompt)}">${escapeHtml(item.prompt.length > 52 ? item.prompt.substring(0, 52) + '…' : item.prompt)}</span>` +
+      (item.status === 'failed' && item.error
+        ? `<span class="qs-error" title="${escapeHtml(item.error)}">${escapeHtml(item.error)}</span>`
+        : '') +
       `</span>` +
       `<span class="qs-label">${label}</span>` +
       `<span class="qs-actions">` +

@@ -96,9 +96,11 @@ function handleDownload(data, sendResponse) {
 
   // No silent fallback to the Downloads root: a rejected name is reported, not hidden.
   const downloadPromise = startDownload(safeFilename)
-    .then(result => result.success
-      ? result
-      : { ...result, error: `${result.error} (filename: "${safeFilename}")` })
+    .then(result => {
+      if (result.success) return result;
+      console.error('[IBG] download failed', result.error, { safeFilename, urlPrefix: url.slice(0, 40) });
+      return { ...result, error: `${result.error} (filename: "${safeFilename}")` };
+    })
     .finally(() => pendingDownloads.delete(dedupeKey));
 
   pendingDownloads.set(dedupeKey, downloadPromise);
