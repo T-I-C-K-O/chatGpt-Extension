@@ -26,67 +26,65 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-const downloadedUrls = new Set();
-const pendingDownloads = new Map();
-const inFlightDownloads = new Map(); // downloadId -> resolve callback
-const downloadedUrlsReady = chrome.storage.local.get('downloadedUrls').then(({ downloadedUrls: storedUrls = [] }) => {
-  storedUrls.forEach(url => downloadedUrls.add(url));
-});
+const pendingDownloads = new Map(); // dedupeKey -> promise (only while in flight)
 
-// download() callback only confirms the request was queued, not that the file was saved
-chrome.downloads.onChanged.addListener(delta => {
-  const resolve = inFlightDownloads.get(delta.id);
-  if (!resolve) return;
-
-  if (delta.state?.current === 'complete') {
-    inFlightDownloads.delete(delta.id);
-    resolve({ success: true, downloadId: delta.id });
-  } else if (delta.state?.current === 'interrupted') {
-    inFlightDownloads.delete(delta.id);
-    resolve({ success: false, error: delta.error?.current || 'Download interrupted' });
-  }
-});
+// Poll instead of relying on onChanged + an in-memory map: the MV3 service worker
+// can be suspended mid-download, which would lose the map and hang the caller.
+function waitForDownload(downloadId) {
+  return new Promise(resolve => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      chrome.downloads.search({ id: downloadId }, items => {
+        const item = items && items[0];
+        if (!item) return;
+        if (item.state === 'complete') {
+          clearInterval(timer);
+          resolve({ success: true, downloadId });
+        } else if (item.state === 'interrupted') {
+          clearInterval(timer);
+          resolve({ success: false, error: item.error || 'Download interrupted' });
+        } else if (Date.now() - started > 120000) {
+          clearInterval(timer);
+          resolve({ success: false, error: 'Download timed out' });
+        }
+      });
+    }, 400);
+  });
+}
 
 function handleDownload(data, sendResponse) {
   const { url, filename, sourceKey } = data;
   const dedupeKey = sourceKey || url;
 
-  downloadedUrlsReady.then(() => {
-    if (!url || downloadedUrls.has(dedupeKey)) {
-      sendResponse({ success: true, duplicate: Boolean(url) });
-      return;
-    }
+  if (!url) {
+    sendResponse({ success: false, error: 'No image URL to download' });
+    return;
+  }
 
-    if (pendingDownloads.has(dedupeKey)) {
-      pendingDownloads.get(dedupeKey).then(sendResponse);
-      return;
-    }
+  // Only coalesce identical requests that are currently in flight. A persistent
+  // "already downloaded" set silently skipped images whose URL was seen before.
+  if (pendingDownloads.has(dedupeKey)) {
+    pendingDownloads.get(dedupeKey).then(sendResponse);
+    return;
+  }
 
-    const safeFilename = sanitizeFilename(filename);
+  const safeFilename = sanitizeFilename(filename);
 
-    const downloadPromise = new Promise(resolve => {
-      chrome.downloads.download(
-        { url, filename: safeFilename, saveAs: false, conflictAction: 'uniquify' },
-        downloadId => {
-          if (chrome.runtime.lastError || downloadId === undefined) {
-            resolve({ success: false, error: chrome.runtime.lastError?.message || 'Download failed to start' });
-            return;
-          }
-          inFlightDownloads.set(downloadId, result => {
-            if (result.success) {
-              downloadedUrls.add(dedupeKey);
-              chrome.storage.local.set({ downloadedUrls: [...downloadedUrls] });
-            }
-            pendingDownloads.delete(dedupeKey);
-            resolve(result);
-          });
+  const downloadPromise = new Promise(resolve => {
+    chrome.downloads.download(
+      { url, filename: safeFilename, saveAs: false, conflictAction: 'uniquify' },
+      downloadId => {
+        if (chrome.runtime.lastError || downloadId === undefined) {
+          resolve({ success: false, error: chrome.runtime.lastError?.message || 'Download failed to start' });
+          return;
         }
-      );
-    });
+        waitForDownload(downloadId).then(resolve);
+      }
+    );
+  }).finally(() => pendingDownloads.delete(dedupeKey));
 
-    pendingDownloads.set(dedupeKey, downloadPromise);
-    downloadPromise.then(sendResponse);
-  });
+  pendingDownloads.set(dedupeKey, downloadPromise);
+  downloadPromise.then(sendResponse);
 }
 
 function sanitizeFilename(filename) {

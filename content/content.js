@@ -344,7 +344,7 @@ function isInAssistantTurn(img) {
   if (!turn) return false;
   if (turn.querySelector('[data-message-author-role="user"]')) return false;
   return !!turn.querySelector('[data-message-author-role="assistant"]') ||
-         /assistant/i.test(turn.getAttribute('data-testid') || '') ||
+         /assistant/i.test(turn.dataset.testid || '') ||
          !!turn.querySelector('.agent-turn');
 }
 
@@ -436,10 +436,11 @@ function watchForNewGeneratedImage() {
 async function downloadImage(src, filename) {
   let downloadUrl = src;
   let fetchError = null;
+  let fetched = false;
 
-  for (let attempt = 0; attempt < 3 && downloadUrl === src; attempt++) {
+  for (let attempt = 0; attempt < 3 && !fetched; attempt++) {
     try {
-      const response = await fetch(src);
+      const response = await fetch(src, { credentials: 'include' });
       if (!response.ok) throw new Error(`Image request failed (${response.status})`);
 
       const blob = await response.blob();
@@ -449,14 +450,16 @@ async function downloadImage(src, filename) {
         reader.onerror = () => reject(new Error('Could not prepare image for download'));
         reader.readAsDataURL(blob);
       });
+      fetched = true;
     } catch (err) {
       fetchError = err;
-      if (attempt < 2) await sleep(300); // blob: URLs can briefly be unavailable right after insertion
+      if (attempt < 2) await sleep(500 * (attempt + 1)); // blob: URLs can briefly be unavailable right after insertion
     }
   }
 
-  // background script has no access to page-scoped blob: URLs — nothing left to fall back to
-  if (downloadUrl === src && src.startsWith('blob:')) {
+  // background script has no access to page-scoped blob: URLs — nothing left to fall back to.
+  // For http(s) URLs, fall back to letting the browser download the URL directly.
+  if (!fetched && !/^https?:/i.test(src)) {
     throw fetchError || new Error('Could not read the generated image (blob expired)');
   }
 
