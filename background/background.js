@@ -1,4 +1,5 @@
 'use strict';
+importScripts('../shared/filename.js');
 chrome.runtime.onInstalled.addListener(() => {
   configureSidePanel();
 });
@@ -36,7 +37,13 @@ function waitForDownload(downloadId) {
     const timer = setInterval(() => {
       chrome.downloads.search({ id: downloadId }, items => {
         const item = items && items[0];
-        if (!item) return;
+        if (!item) {
+          if (Date.now() - started > 120000) {
+            clearInterval(timer);
+            resolve({ success: false, error: 'Download not found' });
+          }
+          return;
+        }
         if (item.state === 'complete') {
           clearInterval(timer);
           resolve({ success: true, downloadId });
@@ -68,11 +75,15 @@ function handleDownload(data, sendResponse) {
     return;
   }
 
-  const safeFilename = sanitizeFilename(filename);
+  const safeFilename = sanitizeDownloadPath(filename);
+  if (!safeFilename) {
+    sendResponse({ success: false, error: 'Invalid download filename' });
+    return;
+  }
 
-  const downloadPromise = new Promise(resolve => {
+  const startDownload = name => new Promise(resolve => {
     chrome.downloads.download(
-      { url, filename: safeFilename, saveAs: false, conflictAction: 'uniquify' },
+      { url, filename: name, saveAs: false, conflictAction: 'uniquify' },
       downloadId => {
         if (chrome.runtime.lastError || downloadId === undefined) {
           resolve({ success: false, error: chrome.runtime.lastError?.message || 'Download failed to start' });
@@ -81,17 +92,15 @@ function handleDownload(data, sendResponse) {
         waitForDownload(downloadId).then(resolve);
       }
     );
-  }).finally(() => pendingDownloads.delete(dedupeKey));
+  });
+
+  // No silent fallback to the Downloads root: a rejected name is reported, not hidden.
+  const downloadPromise = startDownload(safeFilename)
+    .then(result => result.success
+      ? result
+      : { ...result, error: `${result.error} (filename: "${safeFilename}")` })
+    .finally(() => pendingDownloads.delete(dedupeKey));
 
   pendingDownloads.set(dedupeKey, downloadPromise);
   downloadPromise.then(sendResponse);
-}
-
-function sanitizeFilename(filename) {
-  // Strip any absolute path components and prevent traversal
-  return filename
-    .replace(/\.\.[/\\]/g, '')      // no ../ or ..\
-    .replace(/^[/\\]+/, '')         // no leading slashes
-    .replace(/[<>:"|?*\0]/g, '_')  // replace reserved chars
-    .substring(0, 200);             // cap total length
 }

@@ -97,7 +97,7 @@ async function checkStatus() {
       try {
         await chrome.scripting.executeScript({
           target: { tabId: activeTabId },
-          files: ['content/content.js'],
+          files: ['shared/filename.js', 'content/content.js'],
         });
         await sleep(400);
         pong = await sendToTab({ action: 'PING' }, activeTabId).catch(() => null);

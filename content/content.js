@@ -20,11 +20,11 @@ const SEL = {
   STOP: [
     'button[data-testid="stop-button"]',
     'button[aria-label="Stop generating"]',
-    'button[aria-label*="stop" i]',
-    'button[aria-label*="Stop" i]',
+    'button[aria-label="Stop streaming"]',
   ],
 ASSISTANT: [
   '[data-message-author-role="assistant"]',
+  'section[data-turn="assistant"]',
   '.agent-turn',
   '[data-testid*="conversation-turn"][data-testid*="assistant"]',
   'article[data-testid*="conversation-turn"]', // newer ChatGPT layout fallback
@@ -339,7 +339,7 @@ function isUserUploadedImage(img) {
 
 // Only images living inside an assistant turn count as generated images
 function isInAssistantTurn(img) {
-  if (img.closest('[data-message-author-role="assistant"], .agent-turn')) return true;
+  if (img.closest('[data-message-author-role="assistant"], .agent-turn, [data-turn="assistant"]')) return true;
   const turn = img.closest('article, [data-testid^="conversation-turn"]');
   if (!turn) return false;
   if (turn.querySelector('[data-message-author-role="user"]')) return false;
@@ -388,16 +388,25 @@ function watchForNewGeneratedImage() {
     if (!state.isRunning) { finish(() => watcher.reject(new Error('Stopped by user'))); return; }
     if (pickFirst(SEL.STOP)) return; // still generating/streaming — image src may still change, don't resolve yet
 
-    const imgs = Array.from(scanScope().querySelectorAll('img'));
-    const generated = imgs.filter(img =>
-      isGeneratedImage(img) && !isUserUploadedImage(img) && isInAssistantTurn(img) && !seenImageSources.has(img.src)
-    );
+    const generated = collectNew();
     if (!generated.length || !generated.every(img => img.complete && img.naturalWidth > 0)) return;
 
     if (settleTimer) clearTimeout(settleTimer);
+    const key = generated.map(img => img.src).join('|');
     settleTimer = setTimeout(() => {
-      finish(() => watcher.resolve([...new Set(generated.map(img => img.src))]));
+      if (finished) return;
+      // Re-check: the src may have been swapped (preview -> final) or streaming restarted
+      const again = collectNew();
+      if (pickFirst(SEL.STOP) || again.map(img => img.src).join('|') !== key) { tryResolve(); return; }
+      console.debug('[IBG] image ready', again.map(img => img.src));
+      finish(() => watcher.resolve([...new Set(again.map(img => img.src))]));
     }, TIMEOUTS.IMAGE_SETTLE);
+  }
+
+  function collectNew() {
+    return Array.from(scanScope().querySelectorAll('img')).filter(img =>
+      isGeneratedImage(img) && !isUserUploadedImage(img) && isInAssistantTurn(img) && !seenImageSources.has(img.src)
+    );
   }
 
   function attachLoad(img) {
@@ -433,39 +442,10 @@ function watchForNewGeneratedImage() {
   return watcher;
 }
 // ==================== DOWNLOAD ====================
-async function downloadImage(src, filename) {
-  let downloadUrl = src;
-  let fetchError = null;
-  let fetched = false;
-
-  for (let attempt = 0; attempt < 3 && !fetched; attempt++) {
-    try {
-      const response = await fetch(src, { credentials: 'include' });
-      if (!response.ok) throw new Error(`Image request failed (${response.status})`);
-
-      const blob = await response.blob();
-      downloadUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(new Error('Could not prepare image for download'));
-        reader.readAsDataURL(blob);
-      });
-      fetched = true;
-    } catch (err) {
-      fetchError = err;
-      if (attempt < 2) await sleep(500 * (attempt + 1)); // blob: URLs can briefly be unavailable right after insertion
-    }
-  }
-
-  // background script has no access to page-scoped blob: URLs — nothing left to fall back to.
-  // For http(s) URLs, fall back to letting the browser download the URL directly.
-  if (!fetched && !/^https?:/i.test(src)) {
-    throw fetchError || new Error('Could not read the generated image (blob expired)');
-  }
-
+function requestDownload(url, filename, sourceKey) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
-      { action: 'DOWNLOAD_IMAGE', data: { url: downloadUrl, filename, sourceKey: src } },
+      { action: 'DOWNLOAD_IMAGE', data: { url, filename, sourceKey } },
       result => {
         if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
         else if (!result?.success) reject(new Error(result?.error || 'Download failed'));
@@ -473,6 +453,51 @@ async function downloadImage(src, filename) {
       }
     );
   });
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Could not prepare image for download'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function downloadImage(src, filename) {
+  const errors = [];
+
+  // 1) Read the image in the page (has the session auth) and hand it over as a data URL
+  let blob = null;
+  for (let attempt = 0; attempt < 3 && !blob; attempt++) {
+    try {
+      const response = await fetch(src, { credentials: 'include' });
+      if (!response.ok) throw new Error(`Image request failed (${response.status})`);
+      blob = await response.blob();
+    } catch (err) {
+      if (attempt === 2) errors.push(`fetch: ${err.message}`);
+      else await sleep(500 * (attempt + 1)); // blob: URLs can briefly be unavailable right after insertion
+    }
+  }
+
+  if (blob) {
+    try {
+      return await requestDownload(await blobToDataUrl(blob), filename, `${src}#data`);
+    } catch (err) {
+      errors.push(`data: ${err.message}`);
+    }
+  }
+
+  // 2) Fall back to letting chrome.downloads fetch the http(s) URL itself
+  if (/^https?:/i.test(src)) {
+    try {
+      return await requestDownload(src, filename, src);
+    } catch (err) {
+      errors.push(`direct: ${err.message}`);
+    }
+  }
+
+  throw new Error(`Download failed (${errors.join(' | ')})`);
 }
 
 // ==================== HELPERS ====================
@@ -486,7 +511,7 @@ function buildFullPrompt(raw) {
 }
 
 function buildFilename(raw, index) {
-  const folder = state.settings.downloadFolder || 'chatgpt-images';
+  const folder = sanitizeDownloadPath(state.settings.downloadFolder) || 'chatgpt-images';
 
   // Trim at last word boundary within 50 chars so the cut isn't mid-word
   let slug = raw.trim().substring(0, 50);
@@ -499,11 +524,12 @@ function buildFilename(raw, index) {
     .trim()
     .replace(/\s+/g, '_')
     .replace(/_+$/g, '');  // remove trailing underscores left by boundary trim
+  const name = sanitized || `scene_${index}`;
 
   if (state.settings.includeSerial) {
-    return `${folder}/${String(index).padStart(3, '0')}_${sanitized}.png`;
+    return `${folder}/${String(index).padStart(3, '0')}_${name}.png`;
   }
-  return `${folder}/${sanitized}.png`;
+  return `${folder}/${name}.png`;
 }
 
 function pickFirst(selectors) {
