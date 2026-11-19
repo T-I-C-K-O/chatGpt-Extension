@@ -52,7 +52,6 @@ let state = {
   settings: {
     characterPrompt: '',
     downloadFolder:  'chatgpt-images',
-    includeSerial:   true,
     autoDownload:    true,
     delay:           4000,
   },
@@ -279,12 +278,27 @@ async function generateOne(fullPrompt, filename) {
   const srcs = [...new Set(await watcher.promise)]; // .promise, not the watcher object
 
   if (state.settings.autoDownload !== false) {
-    for (let i = 0; i < srcs.length; i++) {
-      const fname = srcs.length > 1
+    // Fetch first and drop anything byte-identical to the uploaded reference image,
+    // so references are never saved and never use up a scene filename.
+    const images = [];
+    for (const src of srcs) {
+      const blob = await fetchImageBlob(src);
+      if (blob && await isReferenceImage(blob)) {
+        console.debug('[IBG] skipped uploaded reference image', src);
+        continue;
+      }
+      images.push({ src, blob });
+    }
+    if (srcs.length && !images.length) {
+      throw new Error('Only the uploaded reference image was found — no generated image to download');
+    }
+
+    for (let i = 0; i < images.length; i++) {
+      const fname = images.length > 1
         ? filename.replace(/\.png$/, `_${i + 1}.png`)
         : filename;
 
-      await downloadImage(srcs[i], fname);
+      await downloadImage(images[i].src, fname, images[i].blob);
       notify('SAVED', { filename: fname });
     }
   }
@@ -300,6 +314,7 @@ async function attachCharacterBible(dataUrl, fileName = 'character-bible.png') {
 
   const response = await fetch(dataUrl);
   const blob = await response.blob();
+  await rememberReferenceImage(blob);
   const file = new File([blob], fileName, { type: blob.type || 'image/png' });
   const transfer = new DataTransfer();
   transfer.items.add(file);
@@ -404,12 +419,32 @@ function isGeneratedImage(img) {
 
 function isUserUploadedImage(img) {
   return !!img.closest(
-    '[data-message-author-role="user"], form, [data-testid*="composer"], [data-testid*="attachment"], [data-testid*="file-thumbnail"]'
+    '[data-message-author-role="user"], [data-turn="user"], form, [data-testid*="composer"], [data-testid*="attachment"], [data-testid*="file-thumbnail"]'
   );
+}
+
+const TURN_CONTAINER = '[data-turn], article, [data-testid^="conversation-turn"]';
+
+// The whole turn of the most recent user message (prompt text + any uploaded reference images)
+function getLastUserTurn() {
+  const users = document.querySelectorAll('[data-turn="user"], [data-message-author-role="user"]');
+  const last = users[users.length - 1];
+  return last ? (last.closest(TURN_CONTAINER) || last) : null;
+}
+
+// Generated images are rendered AFTER the user's message; reference images live inside it.
+function isAfterLastUserTurn(img) {
+  const userTurn = getLastUserTurn();
+  if (!userTurn) return true; // layout unknown: other checks still apply
+  if (userTurn.contains(img)) return false;
+  return !!(userTurn.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING);
 }
 
 // Only images living inside an assistant turn count as generated images
 function isInAssistantTurn(img) {
+  const roleHolder = img.closest('[data-turn], [data-message-author-role]');
+  const role = roleHolder?.dataset.turn || roleHolder?.dataset.messageAuthorRole;
+  if (role === 'user') return false;
   if (img.closest('[data-message-author-role="assistant"], .agent-turn, [data-turn="assistant"]')) return true;
   const turn = img.closest('article, [data-testid^="conversation-turn"]');
   if (!turn) return img.naturalWidth >= 256; // unknown layout: trust large images outside user/composer
@@ -489,7 +524,8 @@ function watchForNewGeneratedImage() {
 
   function collectNew() {
     return Array.from(scanScope().querySelectorAll('img')).filter(img =>
-      isGeneratedImage(img) && !isUserUploadedImage(img) && isInAssistantTurn(img) && !seenImageSources.has(img.src)
+      isGeneratedImage(img) && !seenImageSources.has(img.src) && !isUserUploadedImage(img) &&
+      isInAssistantTurn(img) && isAfterLastUserTurn(img)
     );
   }
 
@@ -539,22 +575,45 @@ function requestDownload(url, filename, sourceKey) {
   });
 }
 
-async function downloadImage(src, filename) {
-  const errors = [];
+// ==================== REFERENCE IMAGE GUARD ====================
+const referenceDigests = new Set();
 
-  // 1) Read the image in the page (has the session auth) and hand it over as a blob URL
-  //    (data URLs over ~2 MB are rejected by chrome.downloads; blob URLs have no such limit)
-  let blob = null;
-  for (let attempt = 0; attempt < 3 && !blob; attempt++) {
+async function blobDigest(blob) {
+  const hash = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function rememberReferenceImage(blob) {
+  try { referenceDigests.add(await blobDigest(blob)); } catch { /* guard is best-effort */ }
+}
+
+async function isReferenceImage(blob) {
+  if (!referenceDigests.size) return false;
+  try { return referenceDigests.has(await blobDigest(blob)); } catch { return false; }
+}
+
+// Read the image in the page (has the session auth). Returns null if it can't be read.
+async function fetchImageBlob(src) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const response = await fetch(src, { credentials: 'include' });
       if (!response.ok) throw new Error(`Image request failed (${response.status})`);
-      blob = await response.blob();
+      return await response.blob();
     } catch (err) {
-      if (attempt === 2) errors.push(`fetch: ${err.message}`);
+      if (attempt === 2) console.warn('[IBG] image fetch failed', err.message, { src });
       else await sleep(500 * (attempt + 1)); // blob: URLs can briefly be unavailable right after insertion
     }
   }
+  return null;
+}
+
+async function downloadImage(src, filename, prefetchedBlob) {
+  const errors = [];
+
+  // 1) Hand the in-page image over as a blob URL
+  //    (data URLs over ~2 MB are rejected by chrome.downloads; blob URLs have no such limit)
+  const blob = prefetchedBlob || await fetchImageBlob(src);
+  if (!blob) errors.push('fetch: could not read image in page');
 
   if (blob) {
     const blobUrl = URL.createObjectURL(blob);
@@ -591,26 +650,10 @@ function buildFullPrompt(raw) {
   return [bibleNote, char, raw.trim()].filter(Boolean).join('\n\n');
 }
 
+// "Scene 12: ..." -> "<folder>/scene_12.png" (no serial prefix, no prompt text)
 function buildFilename(raw, index) {
   const folder = sanitizeDownloadPath(state.settings.downloadFolder) || 'chatgpt-images';
-
-  // Trim at last word boundary within 50 chars so the cut isn't mid-word
-  let slug = raw.trim().substring(0, 50);
-  const lastSpace = slug.lastIndexOf(' ');
-  if (lastSpace > 20) slug = slug.substring(0, lastSpace);
-
-  const sanitized = slug
-    .toLowerCase()
-    .replace(/[<>:"/\\|?*\r\n]+/g, '')
-    .trim()
-    .replace(/\s+/g, '_')
-    .replace(/_+$/g, '');  // remove trailing underscores left by boundary trim
-  const name = sanitized || `scene_${index}`;
-
-  if (state.settings.includeSerial) {
-    return `${folder}/${String(index).padStart(3, '0')}_${name}.png`;
-  }
-  return `${folder}/${name}.png`;
+  return `${folder}/${sceneBaseName(raw, index)}.png`;
 }
 
 function pickFirst(selectors) {

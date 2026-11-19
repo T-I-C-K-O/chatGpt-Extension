@@ -20,4 +20,12 @@ function sanitizeDownloadPath(path) {
   return parts.join('/').substring(0, 200);
 }
 
-if (typeof module !== 'undefined') module.exports = { sanitizeSegment, sanitizeDownloadPath };
+// File name for a scene: just the scene number, e.g. "Scene 12: ..." -> "scene_12".
+// Prompts without a "Scene N" header fall back to their position in the queue.
+function sceneBaseName(prompt, fallbackIndex) {
+  const match = String(prompt || '').match(/^\s*Scene\s+(\d+)/i);
+  const number = match ? Number.parseInt(match[1], 10) : fallbackIndex;
+  return `scene_${number}`;
+}
+
+if (typeof module !== 'undefined') module.exports = { sanitizeSegment, sanitizeDownloadPath, sceneBaseName };

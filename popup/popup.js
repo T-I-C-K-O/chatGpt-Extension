@@ -40,9 +40,6 @@ async function loadSettings() {
   if (settings.delay !== undefined) {
     document.getElementById('delay').value = settings.delay;
   }
-  if (settings.includeSerial !== undefined) {
-    document.getElementById('serialToggle').checked = settings.includeSerial;
-  }
   if (settings.autoDownload !== undefined) {
     document.getElementById('autoDownloadToggle').checked = settings.autoDownload;
   }
@@ -55,7 +52,6 @@ function collectSettings() {
     prompts: document.getElementById('promptQueue').value,
     downloadFolder: document.getElementById('folderName').value.trim() || 'chatgpt-images',
     delay: Math.max(0, Number.parseInt(document.getElementById('delay').value, 10) || 0),
-    includeSerial: document.getElementById('serialToggle').checked,
     autoDownload: document.getElementById('autoDownloadToggle').checked,
     characterBibleName: document.getElementById('characterBibleName').textContent,
   };
@@ -170,7 +166,7 @@ function setupEventListeners() {
   ['folderName', 'delay', 'characterPrompt'].forEach(id => {
     document.getElementById(id).addEventListener('input', saveSettingsDebounced);
   });
-  ['serialToggle', 'autoDownloadToggle'].forEach(id => {
+  ['autoDownloadToggle'].forEach(id => {
     document.getElementById(id).addEventListener('change', saveSettingsDebounced);
   });
 
@@ -278,7 +274,6 @@ async function startGeneration() {
     characterPrompt: s.characterEnabled ? s.characterPrompt : '',
     downloadFolder: s.downloadFolder,
     delay: s.delay * 1000,
-    includeSerial: s.includeSerial,
     autoDownload: s.autoDownload,
     characterBible,
     characterBibleName: bibleFile?.name || '',

@@ -11,7 +11,7 @@ A senior-architect-grade Chrome extension that automates bulk image generation f
 | **Prompt Queue** | Enter 1–500+ prompts, one per line, or upload a `.txt` file |
 | **Character Consistency** | Prepend a reusable character description to every prompt |
 | **Auto-Download** | Images saved automatically to `Downloads/<your-folder>/` |
-| **Serial Numbering** | Filenames like `001_a_red_bicycle.png`, `002_…` |
+| **Scene-Number Filenames** | `Scene 12: …` is saved as `scene_12.png` (uploaded reference images are never downloaded) |
 | **Configurable Delay** | Set seconds between generations (prevents rate-limits) |
 | **Regenerate Last** | One-click re-run of the previous failed/skipped prompt |
 | **Live Log** | Real-time generation log with timestamps in the popup |
